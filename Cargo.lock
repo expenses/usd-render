@@ -26,6 +26,7 @@ checksum = "d468802bab17cbc0cc575e9b053f41e72aa36bfa6b7f55e3529ffa43161b97fa"
 [[package]]
 name = "bbl-build"
 version = "0.2.0"
+source = "git+https://github.com/anderslanglands/bbl-build-rs.git?rev=fd2a2d1#fd2a2d18a6b9290c761a7a470bafdc8e6348bd4f"
 dependencies = [
  "regex",
 ]
@@ -33,6 +34,7 @@ dependencies = [
 [[package]]
 name = "bbl-usd"
 version = "0.1.0"
+source = "git+https://github.com/expenses/bbl-usd-rs?branch=usd-imaging#da6bf7eff654a7e85835d26a09709c7acca38379"
 dependencies = [
  "bbl-build",
  "bindgen",

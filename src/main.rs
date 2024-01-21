@@ -27,6 +27,33 @@ fn main() {
 
     dbg!(imaging);
 
+    let mut camera = std::ptr::null_mut();
+    let mut gf_camera = std::ptr::null_mut();
+    let mut frustum = std::ptr::null_mut();
+    let mut proj = bbl_usd::ffi::gf_Matrix4d_t {
+        m: Default::default(),
+    };
+
+    let mut view = bbl_usd::ffi::gf_Matrix4d_t {
+        m: Default::default(),
+    };
+
+    unsafe {
+        bbl_usd::ffi::usdGeom_Camera_new(camera_prim.ptr(), &mut camera);
+        bbl_usd::ffi::usdGeom_Camera_GetCamera(
+            camera,
+            &bbl_usd::ffi::usd_TimeCode_t {
+                time: Default::default()
+            },
+            &mut gf_camera,
+        );
+        bbl_usd::ffi::gf_Camera_GetFrustum(gf_camera, &mut frustum);
+        bbl_usd::ffi::gf_Frustum_ComputeProjectionMatrix(frustum, &mut proj);
+        bbl_usd::ffi::gf_Frustum_ComputeViewMatrix(frustum, &mut view);
+    }
+
+    dbg!(camera, gf_camera);
+
     unsafe {
         use glutin::event::{Event, WindowEvent};
         use glutin::event_loop::ControlFlow;
@@ -45,7 +72,7 @@ fn main() {
                 Event::RedrawRequested(_) => {
                     gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
 
-                    bbl_usd::ffi::usdImaging_set_camera(imaging, camera_prim.ptr());
+                    bbl_usd::ffi::usdImaging_GLEngine_SetCameraState(imaging, &view, &proj);
 
                     let viewport = glam::DVec4::new(
                         0.0,
