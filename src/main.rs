@@ -111,9 +111,9 @@ fn main() {
 
         unsafe {
             gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
-
-            engine.render(&prim, &params);
         }
+
+        engine.render(&prim, &params);
 
         window.swap_buffers();
     }
