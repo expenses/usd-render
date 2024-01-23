@@ -6,6 +6,9 @@ edition = "2021"
 [dependencies]
 bbl-usd = { path = "../bbl-usd-rs" }
 dolly = "0.4.2"
+egui = "0.25.0"
+egui_glow = "0.25.0"
+egui_window_glfw_passthrough = { git = "https://github.com/expenses/egui_overlay", branch = "egui-glfw-0.25"}
 glam = "0.24.0"
-glfw = "0.54.0"
+glfw = {package = "glfw-passthrough", version = "0.51.1" }
 glow = "0.13.1"
