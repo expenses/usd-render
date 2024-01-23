@@ -6,7 +6,5 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-bbl-usd = { git = "https://github.com/expenses/bbl-usd-rs", branch = "usd-imaging" }
+bbl-usd = { path = "../bbl-usd-rs" }
 glam = "0.25.0"
-glow = "0.13.1"
-glutin = "0.28"

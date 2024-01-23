@@ -1,19 +1,17 @@
-use glow::HasContext;
+mod bindings;
+
+use bindings::*;
+
+static mut IMAGING: *mut bbl_usd::ffi::usdImaging_GLEngine_t = std::ptr::null_mut();
+static mut PRIM: *const bbl_usd::ffi::usd_Prim_t = std::ptr::null();
 
 fn main() {
-    let (gl, window, event_loop) = unsafe {
-        let event_loop = glutin::event_loop::EventLoop::new();
-        let window_builder = glutin::window::WindowBuilder::new()
-            .with_title("Hello triangle!")
-            .with_inner_size(glutin::dpi::LogicalSize::new(1024.0, 768.0));
-        let window = glutin::ContextBuilder::new()
-            .with_vsync(true)
-            .build_windowed(window_builder, &event_loop)
-            .unwrap()
-            .make_current()
-            .unwrap();
-        let gl = glow::Context::from_loader_function(|s| window.get_proc_address(s) as *const _);
-        (gl, window, event_loop)
+    let window = unsafe {
+        glutInit(&mut 0, std::ptr::null_mut());
+        glutInitDisplayMode(GLUT_RGBA);
+        glutInitWindowSize(500, 500);
+        glutInitWindowPosition(0, 0);
+        glutCreateWindow(std::ffi::CStr::from_bytes_with_nul(b"GLLLL\0").unwrap().as_ptr())
     };
 
     let mut imaging = std::ptr::null_mut();
@@ -26,6 +24,11 @@ fn main() {
     let camera_prim = stage.prim_at_path("/camera1").unwrap();
 
     dbg!(imaging);
+
+    unsafe {
+        IMAGING = imaging;
+        PRIM = prim.ptr();
+    }
 
     let mut camera = std::ptr::null_mut();
     let mut gf_camera = std::ptr::null_mut();
@@ -54,52 +57,83 @@ fn main() {
 
     dbg!(camera, gf_camera);
 
+
+
     unsafe {
-        use glutin::event::{Event, WindowEvent};
-        use glutin::event_loop::ControlFlow;
+        glClearColor(0.1, 0.2, 0.3, 1.0);
 
-        gl.clear_color(0.1, 0.2, 0.3, 1.0);
+        bbl_usd::ffi::usdImaging_GLEngine_SetCameraState(imaging, &view, &proj);
 
-        event_loop.run(move |event, _, control_flow| {
-            *control_flow = ControlFlow::Wait;
+        unsafe extern "C" fn showScreen() {
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+            let viewport = glam::DVec4::new(
+                0.0,
+                0.0,
+                glutGet(GLUT_WINDOW_WIDTH) as f64,
+                glutGet(GLUT_WINDOW_HEIGHT) as f64,
+            );
+            bbl_usd::ffi::usdImaging_GLEngine_SetRenderViewport(
+                IMAGING,
+                &viewport as *const glam::DVec4 as *const _,
+            );
+            bbl_usd::ffi::usdImaging_render(IMAGING, PRIM);
+
+
+            glutSwapBuffers();
+        }
+
+        glutDisplayFunc(Some(showScreen));
+        glutIdleFunc(Some(showScreen));
+        glutMainLoop();
+    }
+
+
+    /*unsafe {
+        event_loop.run(move |event, target| {
+            target.set_control_flow(ControlFlow::Wait);
             match event {
-                Event::LoopDestroyed => {
-                    return;
-                }
-                Event::MainEventsCleared => {
-                    window.window().request_redraw();
-                }
-                Event::RedrawRequested(_) => {
-                    gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
-
-                    bbl_usd::ffi::usdImaging_GLEngine_SetCameraState(imaging, &view, &proj);
-
-                    let viewport = glam::DVec4::new(
-                        0.0,
-                        0.0,
-                        window.window().inner_size().width as _,
-                        window.window().inner_size().height as _,
-                    );
-
-                    bbl_usd::ffi::usdImaging_GLEngine_SetRenderViewport(
-                        imaging,
-                        &viewport as *const glam::DVec4 as *const _,
-                    );
-
-                    bbl_usd::ffi::usdImaging_render(imaging, prim.ptr());
-
-                    dbg!(window.window().inner_size());
-                    window.swap_buffers().unwrap();
-                }
                 Event::WindowEvent { ref event, .. } => match event {
                     WindowEvent::Resized(physical_size) => {
-                        window.resize(*physical_size);
+                        display.resize((physical_size.width, physical_size.height));
                     }
-                    WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,
+                    WindowEvent::CloseRequested => {
+                        target.set_control_flow(ControlFlow::Wait)
+                    },
+                    WindowEvent::Destroyed => {
+                        return;
+                    },
+                    WindowEvent::RedrawRequested => {
+                        let mut frame = display.draw();
+                        frame.clear(None, Some((0.1, 0.2, 0.3, 1.0)), false, None, None);
+
+
+                        let viewport = glam::DVec4::new(
+                            0.0,
+                            0.0,
+                            window.inner_size().width as _,
+                            window.inner_size().height as _,
+                        );
+
+                        bbl_usd::ffi::usdImaging_GLEngine_SetRenderViewport(
+                            imaging,
+                            &viewport as *const glam::DVec4 as *const _,
+                        );
+
+                        bbl_usd::ffi::usdImaging_render(imaging, prim.ptr());
+
+                        // /dbg!(window.window().inner_size());
+                        //window.swap_buffers().unwrap();
+                        frame.finish();
+                        //panic!();
+                    }
                     _ => (),
+                },
+                Event::AboutToWait => {
+                    window.request_redraw();
                 },
                 _ => (),
             }
         });
-    }
+    }*/
 }
