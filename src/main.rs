@@ -1,31 +1,29 @@
 use bbl_usd::usd;
 use dolly::prelude::*;
-use futures_util::StreamExt;
 use glfw::{Action, Context, Key};
 use glow::HasContext;
 use iroh_net::ticket::NodeTicket;
-use std::collections::HashSet;
 use std::str::FromStr;
 use std::sync::Arc;
 
 mod networking;
 
-//const ALPN: &[u8] = b"myalpn";
+const ALPN: &[u8] = b"myalpn";
+
+type Lines = Arc<tokio::sync::RwLock<Vec<(log::Level, String)>>>;
 
 struct Log {
-    inner: Arc<parking_lot::RwLock<Vec<String>>>,
+    lines: Lines,
 }
 
 impl Log {
-    fn new() -> (Box<Self>, Arc<parking_lot::RwLock<Vec<String>>>) {
-        log::set_max_level(log::LevelFilter::Info);
-
-        let lines: Arc<parking_lot::RwLock<Vec<String>>> = Default::default();
+    fn new() -> (Self, Lines) {
+        let lines = Lines::default();
 
         (
-            Box::new(Self {
-                inner: lines.clone(),
-            }),
+            Self {
+                lines: lines.clone(),
+            },
             lines,
         )
     }
@@ -35,7 +33,7 @@ impl log::Log for Log {
     fn flush(&self) {}
 
     fn enabled(&self, metadata: &log::Metadata) -> bool {
-        metadata.target() == "usd_render"
+        metadata.target().starts_with("usd_render")
     }
 
     fn log(&self, record: &log::Record) {
@@ -43,24 +41,30 @@ impl log::Log for Log {
             return;
         }
 
-        let mut inner = self.inner.write();
+        let formatted = (record.level(), record.args().to_string());
 
-        inner.push(format!("[{}] {}", record.level(), record.args()));
+        let lines = self.lines.clone();
+
+        tokio::spawn(async move {
+            let mut lines = lines.write().await;
+            lines.push(formatted);
+        });
     }
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    //let (logger, log_lines) = Log::new();
-    //log::set_boxed_logger(logger)?;
-    //env_logger::init();
+    let (logger, log_lines) = Log::new();
+    log::set_boxed_logger(Box::new(logger))?;
+    log::set_max_level(log::LevelFilter::Info);
 
     let approved_nodes = networking::ApprovedNodes::default();
     let (approval_tx, mut approval_rx) = tokio::sync::mpsc::channel(10);
+    let connected_nodes = networking::ConnectedNodes::default();
 
     let endpoint_handle = tokio::spawn(
         iroh_net::MagicEndpoint::builder()
-            .alpns(vec![iroh_gossip::net::GOSSIP_ALPN.to_owned()])
+            .alpns(vec![ALPN.to_owned()])
             .bind(0),
     );
 
@@ -117,20 +121,23 @@ async fn main() -> anyhow::Result<()> {
     let endpoint = endpoint_handle.await??;
     let addr = endpoint.my_addr().await?;
 
-    let gossip_layer = networking::GossipLayer::new(endpoint.clone()).await?;
+    let (state_tx, state_rx) = tokio::sync::watch::channel(String::new());
 
     tokio::spawn({
-        let gossip_layer = gossip_layer.clone();
         let endpoint = endpoint.clone();
         let approved_nodes = approved_nodes.clone();
         let approval_queue = approval_tx.clone();
+        let connected_nodes = connected_nodes.clone();
+        let state_rx = state_rx.clone();
         async move {
             while let Some(connecting) = endpoint.accept().await {
                 tokio::spawn(networking::accept(
+                    endpoint.clone(),
                     connecting,
-                    gossip_layer.clone(),
                     approved_nodes.clone(),
                     approval_queue.clone(),
+                    connected_nodes.clone(),
+                    state_rx.clone(),
                 ));
             }
         }
@@ -213,6 +220,21 @@ async fn main() -> anyhow::Result<()> {
 
         engine.set_camera_state(view_from_camera_transform(transform), proj);
 
+        state_tx.send_if_modified(|old| {
+            let new = format!(
+                "{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs()
+            );
+            if *old == new {
+                return false;
+            }
+            *old = new;
+            true
+        });
+
         // Egui
 
         {
@@ -223,6 +245,8 @@ async fn main() -> anyhow::Result<()> {
             }
 
             let approved_nodes = approved_nodes.read().await;
+
+            let log_lines = log_lines.read().await;
 
             egui::Window::new("Network").show(&egui, |ui| {
                 ui.label(format!("Node ID: {}", addr.node_id.fmt_short()));
@@ -244,12 +268,18 @@ async fn main() -> anyhow::Result<()> {
                 {
                     match NodeTicket::from_str(&text) {
                         Ok(ticket) => {
-                            let gossip_layer = gossip_layer.clone();
                             let node_addr = ticket.node_addr().clone();
-
-                            tokio::spawn(async move {
-                                gossip_layer.connect(node_addr).await.unwrap();
-                            });
+                            if node_addr == addr {
+                                log::error!("Not connecting to self.");
+                            } else {
+                                tokio::spawn(networking::connect(
+                                    endpoint.clone(),
+                                    node_addr,
+                                    connected_nodes.clone(),
+                                    state_rx.clone(),
+                                ));
+                                text.clear();
+                            }
                         }
                         Err(error) => {
                             log::error!("bad ticket {}: {}", text, error);
@@ -261,34 +291,52 @@ async fn main() -> anyhow::Result<()> {
 
                 draw_connection_grid(ui, &connection_infos);
 
-                approval_queue.retain_mut(|(node_id, sender)| {
-                    if sender.is_none() {
-                        return false;
-                    }
+                if !approval_queue.is_empty() {
+                    ui.heading("Approval Queue");
 
-                    if approved_nodes.contains(node_id) {
-                        sender.take().unwrap().send(true);
-                        return false;
-                    }
-
-                    ui.horizontal(|ui| {
-                        ui.label(node_id.fmt_short());
-
-                        let allow = ui.button("Allow").clicked();
-                        let deny = ui.button("Deny").clicked();
-
-                        if allow {
-                            sender.take().unwrap().send(true);
-                            false
-                        } else if deny {
-                            sender.take().unwrap().send(false);
-                            false
-                        } else {
-                            true
+                    approval_queue.retain_mut(|(node_id, sender)| {
+                        if sender.is_none() {
+                            return false;
                         }
-                    })
-                    .inner
-                });
+
+                        if approved_nodes.contains(node_id) {
+                            let _ = sender.take().unwrap().send(true);
+                            return false;
+                        }
+
+                        ui.horizontal(|ui| {
+                            ui.label(node_id.fmt_short());
+
+                            let allow = ui.button("Allow").clicked();
+                            let deny = ui.button("Deny").clicked();
+
+                            if allow {
+                                let _ = sender.take().unwrap().send(true);
+                                false
+                            } else if deny {
+                                let _ = sender.take().unwrap().send(false);
+                                false
+                            } else {
+                                true
+                            }
+                        })
+                        .inner
+                    });
+                }
+
+                ui.heading("Log");
+
+                egui::containers::scroll_area::ScrollArea::vertical()
+                    .stick_to_bottom(true)
+                    .show(ui, |ui| {
+                        egui::Grid::new("log").striped(true).show(ui, |ui| {
+                            for (level, line) in log_lines.iter() {
+                                ui.label(level.to_string());
+                                ui.label(line);
+                                ui.end_row();
+                            }
+                        })
+                    });
             });
         }
 
