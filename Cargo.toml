@@ -9,19 +9,16 @@ opt-level = 3
 [dependencies]
 anyhow = "1.0.79"
 bbl-usd = { path = "../bbl-usd-rs" }
-bytes = "1.5.0"
 dolly = "0.4.2"
 egui = "0.25.0"
 egui_glow = "0.25.0"
 egui_window_glfw_passthrough = "0.7.0"
-futures-util = "0.3.30"
 glam = "0.24.0"
 glfw = { package = "glfw-passthrough", version = "0.51.1" }
 glow = "0.13.1"
 iroh-net = "0.12.0"
 lazy_static = "1.4.0"
 log = "0.4.20"
-parking_lot = "0.12.1"
 postcard = "1.0.8"
 quinn = "0.10.2"
 tokio = "1.35.1"

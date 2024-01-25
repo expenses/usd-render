@@ -1,13 +1,9 @@
 use crate::ALPN;
-use futures_util::StreamExt;
-use iroh_net::key::PublicKey;
-use iroh_net::magic_endpoint::AddrInfo;
-use iroh_net::magic_endpoint::{accept_conn, MagicEndpoint};
-use iroh_net::NodeAddr;
+use tokio_stream::StreamExt;
+use iroh_net::{key::PublicKey, magic_endpoint::accept_conn, AddrInfo, MagicEndpoint, NodeAddr};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use tokio::sync::oneshot;
-use tokio::sync::watch;
+use tokio::sync::{oneshot, watch};
 
 pub type ApprovedNodes = Arc<tokio::sync::RwLock<HashMap<PublicKey, NodeSharingPolicy>>>;
 pub type ConnectedNodes = Arc<tokio::sync::Mutex<HashSet<PublicKey>>>;

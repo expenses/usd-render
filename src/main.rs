@@ -280,31 +280,32 @@ async fn main() -> anyhow::Result<()> {
                                 }
                             }
 
-                            let allow = ui.button("Allow").clicked();
-                            let allow_private = ui.button("Allow (private)").clicked();
-                            let deny = ui.button("Deny").clicked();
+                            let mut retain = true;
 
-                            if allow {
+                            if ui.button("Allow").clicked() {
                                 let _ =
                                     sender.take().unwrap().send(NodeApprovalResponse::Approved(
                                         NodeSharingPolicy::AllExcept(Default::default()),
                                     ));
-                                false
-                            } else if allow_private {
+                                retain = false;
+                            }
+
+                            if ui.button("Allow (private)").clicked() {
                                 let _ =
                                     sender.take().unwrap().send(NodeApprovalResponse::Approved(
                                         NodeSharingPolicy::NoneExcept(Default::default()),
                                     ));
-                                false
-                            } else if deny {
+                                retain = false;
+                            }
+                            if ui.button("Deny").clicked() {
                                 let _ = sender
                                     .take()
                                     .unwrap()
                                     .send(networking::NodeApprovalResponse::Denied);
-                                false
-                            } else {
-                                true
+                                retain = false;
                             }
+
+                            retain
                         })
                         .inner
                     });
