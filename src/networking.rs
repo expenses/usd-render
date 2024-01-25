@@ -4,13 +4,46 @@ use iroh_net::key::PublicKey;
 use iroh_net::magic_endpoint::AddrInfo;
 use iroh_net::magic_endpoint::{accept_conn, MagicEndpoint};
 use iroh_net::NodeAddr;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::oneshot;
 use tokio::sync::watch;
 
-pub type ApprovedNodes = Arc<tokio::sync::RwLock<HashSet<PublicKey>>>;
+pub type ApprovedNodes = Arc<tokio::sync::RwLock<HashMap<PublicKey, NodeSharingPolicy>>>;
 pub type ConnectedNodes = Arc<tokio::sync::Mutex<HashSet<PublicKey>>>;
+pub type ApprovalQueue = tokio::sync::mpsc::Sender<NodeApprovalRequest>;
+
+pub struct NodeApprovalRequest {
+    pub node_id: PublicKey,
+    pub direction: NodeApprovalDirection,
+    pub response_sender: oneshot::Sender<NodeApprovalResponse>,
+}
+
+pub enum NodeApprovalDirection {
+    Incoming,
+    Outgoing { referrer: PublicKey },
+}
+
+pub enum NodeApprovalResponse {
+    Approved(NodeSharingPolicy),
+    Denied,
+}
+
+// Who should a node's addrinfo be shared with?
+#[derive(Clone)]
+pub enum NodeSharingPolicy {
+    AllExcept(HashSet<PublicKey>),
+    NoneExcept(HashSet<PublicKey>),
+}
+
+impl NodeSharingPolicy {
+    fn allows(&self, node_id: PublicKey) -> bool {
+        match self {
+            Self::AllExcept(all_except) => !all_except.contains(&node_id),
+            Self::NoneExcept(none_except) => none_except.contains(&node_id),
+        }
+    }
+}
 
 enum PacketType {
     Data = 0,
@@ -27,14 +60,16 @@ impl PacketType {
     }
 }
 
-pub async fn accept(
-    endpoint: MagicEndpoint,
-    connecting: quinn::Connecting,
-    approved_nodes: ApprovedNodes,
-    approval_queue: tokio::sync::mpsc::Sender<(PublicKey, oneshot::Sender<bool>)>,
-    connected_nodes: ConnectedNodes,
-    state: watch::Receiver<String>,
-) {
+#[derive(Clone)]
+pub struct State {
+    pub endpoint: MagicEndpoint,
+    pub approved_nodes: ApprovedNodes,
+    pub approval_queue: ApprovalQueue,
+    pub connected_nodes: ConnectedNodes,
+    pub state: watch::Receiver<String>,
+}
+
+pub async fn accept(connecting: quinn::Connecting, state: State) {
     let (node_id, _alpn, connection) = match accept_conn(connecting).await {
         Ok(data) => data,
         Err(error) => {
@@ -43,7 +78,7 @@ pub async fn accept(
         }
     };
 
-    match wait_for_approval(node_id, approved_nodes, approval_queue).await {
+    match wait_for_approval(state.clone(), node_id, NodeApprovalDirection::Incoming).await {
         Ok(true) => {}
         Err(error) => {
             log::error!("{}", error);
@@ -57,44 +92,69 @@ pub async fn accept(
         }
     }
 
-    handle_connection(endpoint, connection, connected_nodes, node_id, state).await;
+    handle_connection(state, connection, node_id).await;
 }
 
 async fn wait_for_approval(
+    state: State,
     node_id: PublicKey,
-    approved_nodes: ApprovedNodes,
-    approval_queue: tokio::sync::mpsc::Sender<(PublicKey, oneshot::Sender<bool>)>,
+    direction: NodeApprovalDirection,
 ) -> anyhow::Result<bool> {
-    if !approved_nodes.read().await.contains(&node_id) {
+    if !state.approved_nodes.read().await.contains_key(&node_id) {
         let (tx, rx) = oneshot::channel();
-        approval_queue.send((node_id, tx)).await?;
+        state
+            .approval_queue
+            .send(NodeApprovalRequest {
+                node_id,
+                direction,
+                response_sender: tx,
+            })
+            .await?;
 
-        let approved = rx.await?;
+        let node_sharing = match rx.await? {
+            NodeApprovalResponse::Approved(node_sharing) => node_sharing,
+            NodeApprovalResponse::Denied => return Ok(false),
+        };
 
-        if !approved {
-            return Ok(false);
-        }
-
-        approved_nodes.write().await.insert(node_id);
+        state
+            .approved_nodes
+            .write()
+            .await
+            .insert(node_id, node_sharing);
     }
 
     Ok(true)
 }
 
-pub async fn connect(
-    endpoint: MagicEndpoint,
-    addr: NodeAddr,
-    connected_nodes: ConnectedNodes,
-    state: watch::Receiver<String>,
-) {
-    if connected_nodes.lock().await.contains(&addr.node_id) {
+pub async fn connect(state: State, addr: NodeAddr, referrer: Option<PublicKey>) {
+    if let Some(referrer) = referrer {
+        match wait_for_approval(
+            state.clone(),
+            addr.node_id,
+            NodeApprovalDirection::Outgoing { referrer },
+        )
+        .await
+        {
+            Ok(true) => {}
+            Err(error) => {
+                log::error!("{}", error);
+                return;
+            }
+            Ok(false) => {
+                log::info!("Denied connection to {}", addr.node_id.fmt_short());
+                return;
+            }
+        }
+    }
+
+    if state.connected_nodes.lock().await.contains(&addr.node_id) {
         log::warn!("Not connecting to {}: already connected", addr.node_id);
         return;
     }
 
     let node_id = addr.node_id;
 
-    let connection = match endpoint.connect(addr, ALPN).await {
+    let connection = match state.endpoint.connect(addr, ALPN).await {
         Ok(connection) => connection,
         Err(error) => {
             log::error!("Connecting to {} failed: {}", node_id, error);
@@ -102,41 +162,59 @@ pub async fn connect(
         }
     };
 
-    handle_connection(endpoint, connection, connected_nodes, node_id, state).await;
+    handle_connection(state, connection, node_id).await;
 }
 
 async fn handle_connection(
-    endpoint: MagicEndpoint,
+    state: State,
     connection: quinn::Connection,
-    connected_nodes: ConnectedNodes,
-    node_id: PublicKey,
-    state: watch::Receiver<String>,
+    connection_node_id: PublicKey,
 ) {
     let mut third_parties = Vec::new();
 
     {
-        let mut connected_nodes = connected_nodes.lock().await;
+        let mut connected_nodes = state.connected_nodes.lock().await;
 
-        if connected_nodes.contains(&node_id) {
-            log::info!("Ending new connection to {}: already connected", node_id);
+        if connected_nodes.contains(&connection_node_id) {
+            log::info!(
+                "Ending new connection to {}: already connected",
+                connection_node_id
+            );
+            connection.close(0_u32.into(), b"already connected");
             return;
         }
 
-        for &node_id in connected_nodes.iter() {
-            let connection_info = match endpoint.connection_info(node_id).await {
+        for &existing_node_id in connected_nodes.iter() {
+            match state.approved_nodes.read().await.get(&existing_node_id) {
+                Some(sharing_policy) => {
+                    if !sharing_policy.allows(connection_node_id) {
+                        log::info!("Not sharing {} to {}", existing_node_id, connection_node_id);
+                        continue;
+                    }
+                }
+                None => {
+                    log::error!("Node {} connected but not allowed.", existing_node_id);
+                }
+            }
+
+            let connection_info = match state.endpoint.connection_info(existing_node_id).await {
                 Err(error) => {
-                    log::error!("Error getting connection info for {}: {}", node_id, error);
+                    log::error!(
+                        "Error getting connection info for {}: {}",
+                        existing_node_id,
+                        error
+                    );
                     continue;
                 }
                 Ok(None) => {
-                    log::error!("No connection info for {} found.", node_id);
+                    log::error!("No connection info for {} found.", existing_node_id);
                     continue;
                 }
                 Ok(Some(info)) => info,
             };
 
             third_parties.push(NodeAddr {
-                node_id,
+                node_id: existing_node_id,
                 info: AddrInfo {
                     derp_url: connection_info.derp_url,
                     direct_addresses: connection_info.addrs.iter().map(|addr| addr.addr).collect(),
@@ -144,8 +222,10 @@ async fn handle_connection(
             });
         }
 
-        connected_nodes.insert(node_id);
+        connected_nodes.insert(connection_node_id);
     }
+
+    log::info!("Sending {:?} to {}", third_parties, connection_node_id);
 
     let send_initial_third_parties = tokio::spawn({
         let connection = connection.clone();
@@ -160,15 +240,7 @@ async fn handle_connection(
         let connection = connection.clone();
         let state = state.clone();
         async move {
-            if let Err(error) = handle_incoming(
-                node_id,
-                connection,
-                endpoint,
-                connected_nodes,
-                state.clone(),
-            )
-            .await
-            {
+            if let Err(error) = handle_incoming(state, connection_node_id, connection).await {
                 log::error!("{}", error);
             }
         }
@@ -206,11 +278,8 @@ async fn send_third_parties(
     Ok(())
 }
 
-async fn handle_outgoing(
-    connection: quinn::Connection,
-    state: watch::Receiver<String>,
-) -> anyhow::Result<()> {
-    let mut state_stream = tokio_stream::wrappers::WatchStream::from_changes(state);
+async fn handle_outgoing(connection: quinn::Connection, state: State) -> anyhow::Result<()> {
+    let mut state_stream = tokio_stream::wrappers::WatchStream::from_changes(state.state);
     while let Some(state) = state_stream.next().await {
         let mut stream = connection.open_uni().await?;
         stream.write_all(&[PacketType::Data as u8]).await?;
@@ -220,11 +289,9 @@ async fn handle_outgoing(
 }
 
 async fn handle_incoming(
+    state: State,
     node_id: PublicKey,
     connection: quinn::Connection,
-    endpoint: MagicEndpoint,
-    connected_nodes: ConnectedNodes,
-    state: watch::Receiver<String>,
 ) -> anyhow::Result<()> {
     loop {
         let mut stream = connection.accept_uni().await?;
@@ -249,23 +316,13 @@ async fn handle_incoming(
                 let data = stream.read_to_end(1024 * 1024).await?;
                 let third_parties: Vec<NodeAddr> = postcard::from_bytes(&data)?;
                 for node_addr in third_parties.into_iter() {
-                    fn spawn_connect(
-                        endpoint: MagicEndpoint,
-                        node_addr: NodeAddr,
-                        connected_nodes: ConnectedNodes,
-                        state: watch::Receiver<String>,
-                    ) {
+                    fn spawn_connect(state: State, node_addr: NodeAddr, referrer: PublicKey) {
                         tokio::spawn(async move {
-                            connect(endpoint, node_addr, connected_nodes, state).await;
+                            connect(state, node_addr, Some(referrer)).await;
                         });
                     }
 
-                    spawn_connect(
-                        endpoint.clone(),
-                        node_addr,
-                        connected_nodes.clone(),
-                        state.clone(),
-                    );
+                    spawn_connect(state.clone(), node_addr, node_id);
                 }
             }
         }

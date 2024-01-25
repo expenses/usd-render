@@ -6,8 +6,10 @@ use iroh_net::ticket::NodeTicket;
 use std::str::FromStr;
 use std::sync::Arc;
 
-mod networking;
 mod logging;
+mod networking;
+
+use networking::{NodeApprovalResponse, NodeSharingPolicy};
 
 const ALPN: &[u8] = b"myalpn";
 
@@ -80,22 +82,19 @@ async fn main() -> anyhow::Result<()> {
 
     let (state_tx, state_rx) = tokio::sync::watch::channel(String::new());
 
+    let networking_state = networking::State {
+        endpoint: endpoint.clone(),
+        approved_nodes: approved_nodes.clone(),
+        approval_queue: approval_tx.clone(),
+        connected_nodes: connected_nodes.clone(),
+        state: state_rx.clone(),
+    };
+
     tokio::spawn({
-        let endpoint = endpoint.clone();
-        let approved_nodes = approved_nodes.clone();
-        let approval_queue = approval_tx.clone();
-        let connected_nodes = connected_nodes.clone();
-        let state_rx = state_rx.clone();
+        let networking_state = networking_state.clone();
         async move {
-            while let Some(connecting) = endpoint.accept().await {
-                tokio::spawn(networking::accept(
-                    endpoint.clone(),
-                    connecting,
-                    approved_nodes.clone(),
-                    approval_queue.clone(),
-                    connected_nodes.clone(),
-                    state_rx.clone(),
-                ));
+            while let Some(connecting) = networking_state.endpoint.accept().await {
+                tokio::spawn(networking::accept(connecting, networking_state.clone()));
             }
         }
     });
@@ -197,11 +196,15 @@ async fn main() -> anyhow::Result<()> {
         {
             let connection_infos = endpoint.connection_infos().await?;
 
-            while let Ok((node_id, sender)) = approval_rx.try_recv() {
-                approval_queue.push((node_id, Some(sender)));
+            while let Ok(request) = approval_rx.try_recv() {
+                approval_queue.push((
+                    request.node_id,
+                    request.direction,
+                    Some(request.response_sender),
+                ));
             }
 
-            let approved_nodes = approved_nodes.read().await;
+            let approved_nodes_read = approved_nodes.read().await;
 
             let log_lines = logging::get_lines().await;
 
@@ -230,10 +233,9 @@ async fn main() -> anyhow::Result<()> {
                                 log::error!("Not connecting to self.");
                             } else {
                                 tokio::spawn(networking::connect(
-                                    endpoint.clone(),
+                                    networking_state.clone(),
                                     node_addr,
-                                    connected_nodes.clone(),
-                                    state_rx.clone(),
+                                    None,
                                 ));
                                 text.clear();
                             }
@@ -251,27 +253,54 @@ async fn main() -> anyhow::Result<()> {
                 if !approval_queue.is_empty() {
                     ui.heading("Approval Queue");
 
-                    approval_queue.retain_mut(|(node_id, sender)| {
+                    approval_queue.retain_mut(|(node_id, direction, sender)| {
                         if sender.is_none() {
                             return false;
                         }
 
-                        if approved_nodes.contains(node_id) {
-                            let _ = sender.take().unwrap().send(true);
+                        if let Some(node_sharing) = approved_nodes_read.get(node_id) {
+                            let _ = sender
+                                .take()
+                                .unwrap()
+                                .send(NodeApprovalResponse::Approved(node_sharing.clone()));
                             return false;
                         }
 
                         ui.horizontal(|ui| {
                             ui.label(node_id.fmt_short());
+                            match direction {
+                                networking::NodeApprovalDirection::Incoming => {
+                                    ui.label("Incoming");
+                                }
+                                networking::NodeApprovalDirection::Outgoing { referrer } => {
+                                    ui.label(format!(
+                                        "Outgoing (referred to by {})",
+                                        referrer.fmt_short()
+                                    ));
+                                }
+                            }
 
                             let allow = ui.button("Allow").clicked();
+                            let allow_private = ui.button("Allow (private)").clicked();
                             let deny = ui.button("Deny").clicked();
 
                             if allow {
-                                let _ = sender.take().unwrap().send(true);
+                                let _ =
+                                    sender.take().unwrap().send(NodeApprovalResponse::Approved(
+                                        NodeSharingPolicy::AllExcept(Default::default()),
+                                    ));
+                                false
+                            } else if allow_private {
+                                let _ =
+                                    sender.take().unwrap().send(NodeApprovalResponse::Approved(
+                                        NodeSharingPolicy::NoneExcept(Default::default()),
+                                    ));
                                 false
                             } else if deny {
-                                let _ = sender.take().unwrap().send(false);
+                                let _ = sender
+                                    .take()
+                                    .unwrap()
+                                    .send(networking::NodeApprovalResponse::Denied);
                                 false
                             } else {
                                 true

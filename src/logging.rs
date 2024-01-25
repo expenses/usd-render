@@ -28,26 +28,28 @@ impl log::Log for Log {
 }
 
 pub async fn get_lines() -> Lines {
-    Lines {lines: LINES.read().await }
+    Lines {
+        lines: LINES.read().await,
+    }
 }
 
 pub struct Lines {
-    lines: tokio::sync::RwLockReadGuard<'static, Vec<(log::Level, String)>>
+    lines: tokio::sync::RwLockReadGuard<'static, Vec<(log::Level, String)>>,
 }
 
 impl Lines {
     pub fn draw(&self, ui: &mut egui::Ui) {
         egui::containers::scroll_area::ScrollArea::vertical()
-        .stick_to_bottom(true)
-        .show(ui, |ui| {
-            egui::Grid::new("log").striped(true).show(ui, |ui| {
-                for (level, line) in self.lines.iter() {
-                    ui.label(level.to_string());
-                    ui.label(line);
-                    ui.end_row();
-                }
-            })
-        });
+            .stick_to_bottom(true)
+            .show(ui, |ui| {
+                egui::Grid::new("log").striped(true).show(ui, |ui| {
+                    for (level, line) in self.lines.iter() {
+                        ui.label(level.to_string());
+                        ui.label(line);
+                        ui.end_row();
+                    }
+                })
+            });
     }
 }
 
