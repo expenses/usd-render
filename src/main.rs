@@ -7,56 +7,13 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 mod networking;
+mod logging;
 
 const ALPN: &[u8] = b"myalpn";
 
-type Lines = Arc<tokio::sync::RwLock<Vec<(log::Level, String)>>>;
-
-struct Log {
-    lines: Lines,
-}
-
-impl Log {
-    fn new() -> (Self, Lines) {
-        let lines = Lines::default();
-
-        (
-            Self {
-                lines: lines.clone(),
-            },
-            lines,
-        )
-    }
-}
-
-impl log::Log for Log {
-    fn flush(&self) {}
-
-    fn enabled(&self, metadata: &log::Metadata) -> bool {
-        metadata.target().starts_with("usd_render")
-    }
-
-    fn log(&self, record: &log::Record) {
-        if !self.enabled(record.metadata()) {
-            return;
-        }
-
-        let formatted = (record.level(), record.args().to_string());
-
-        let lines = self.lines.clone();
-
-        tokio::spawn(async move {
-            let mut lines = lines.write().await;
-            lines.push(formatted);
-        });
-    }
-}
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let (logger, log_lines) = Log::new();
-    log::set_boxed_logger(Box::new(logger))?;
-    log::set_max_level(log::LevelFilter::Info);
+    logging::setup()?;
 
     let approved_nodes = networking::ApprovedNodes::default();
     let (approval_tx, mut approval_rx) = tokio::sync::mpsc::channel(10);
@@ -246,7 +203,7 @@ async fn main() -> anyhow::Result<()> {
 
             let approved_nodes = approved_nodes.read().await;
 
-            let log_lines = log_lines.read().await;
+            let log_lines = logging::get_lines().await;
 
             egui::Window::new("Network").show(&egui, |ui| {
                 ui.label(format!("Node ID: {}", addr.node_id.fmt_short()));
@@ -326,17 +283,7 @@ async fn main() -> anyhow::Result<()> {
 
                 ui.heading("Log");
 
-                egui::containers::scroll_area::ScrollArea::vertical()
-                    .stick_to_bottom(true)
-                    .show(ui, |ui| {
-                        egui::Grid::new("log").striped(true).show(ui, |ui| {
-                            for (level, line) in log_lines.iter() {
-                                ui.label(level.to_string());
-                                ui.label(line);
-                                ui.end_row();
-                            }
-                        })
-                    });
+                log_lines.draw(ui);
             });
         }
 

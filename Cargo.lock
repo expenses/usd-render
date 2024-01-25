@@ -3920,6 +3920,7 @@ dependencies = [
  "glfw-passthrough",
  "glow",
  "iroh-net",
+ "lazy_static",
  "log",
  "parking_lot",
  "postcard",
