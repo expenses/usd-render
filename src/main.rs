@@ -1,5 +1,6 @@
 use bbl_usd::usd;
 use dolly::prelude::*;
+use futures_util::StreamExt;
 use glfw::{Action, Context, Key};
 use glow::HasContext;
 use iroh_net::ticket::NodeTicket;
@@ -9,7 +10,7 @@ use std::sync::Arc;
 
 mod networking;
 
-const ALPN: &[u8] = b"myalpn";
+//const ALPN: &[u8] = b"myalpn";
 
 struct Log {
     inner: Arc<parking_lot::RwLock<Vec<String>>>,
@@ -50,14 +51,16 @@ impl log::Log for Log {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let (logger, log_lines) = Log::new();
-    log::set_boxed_logger(logger)?;
+    //let (logger, log_lines) = Log::new();
+    //log::set_boxed_logger(logger)?;
+    //env_logger::init();
 
-    let connected_nodes = networking::ConnectedNodes::default();
+    let approved_nodes = networking::ApprovedNodes::default();
+    let (approval_tx, mut approval_rx) = tokio::sync::mpsc::channel(10);
 
     let endpoint_handle = tokio::spawn(
         iroh_net::MagicEndpoint::builder()
-            .alpns(vec![ALPN.to_owned()])
+            .alpns(vec![iroh_gossip::net::GOSSIP_ALPN.to_owned()])
             .bind(0),
     );
 
@@ -112,21 +115,32 @@ async fn main() -> anyhow::Result<()> {
     let mut text = String::new();
 
     let endpoint = endpoint_handle.await??;
+    let addr = endpoint.my_addr().await?;
+
+    let gossip_layer = networking::GossipLayer::new(endpoint.clone()).await?;
 
     tokio::spawn({
+        let gossip_layer = gossip_layer.clone();
         let endpoint = endpoint.clone();
-        let connected_nodes = connected_nodes.clone();
+        let approved_nodes = approved_nodes.clone();
+        let approval_queue = approval_tx.clone();
         async move {
             while let Some(connecting) = endpoint.accept().await {
-                tokio::spawn(networking::accept(connecting, connected_nodes.clone()));
+                tokio::spawn(networking::accept(
+                    connecting,
+                    gossip_layer.clone(),
+                    approved_nodes.clone(),
+                    approval_queue.clone(),
+                ));
             }
         }
     });
 
-    let addr = endpoint.my_addr().await?;
     let ticket = iroh_net::ticket::NodeTicket::new(addr.clone())?;
 
     println!("{}", ticket);
+
+    let mut approval_queue = Vec::new();
 
     while !glfw_backend.window.should_close() {
         glfw_backend.glfw.poll_events();
@@ -203,7 +217,15 @@ async fn main() -> anyhow::Result<()> {
 
         {
             let connection_infos = endpoint.connection_infos().await?;
+
+            while let Ok((node_id, sender)) = approval_rx.try_recv() {
+                approval_queue.push((node_id, Some(sender)));
+            }
+
+            let approved_nodes = approved_nodes.read().await;
+
             egui::Window::new("Network").show(&egui, |ui| {
+                ui.label(format!("Node ID: {}", addr.node_id.fmt_short()));
                 ui.label("Node Ticket (click to copy):");
                 let node_ticket_str = ticket.to_string();
                 if ui.button(&node_ticket_str).clicked() {
@@ -222,16 +244,12 @@ async fn main() -> anyhow::Result<()> {
                 {
                     match NodeTicket::from_str(&text) {
                         Ok(ticket) => {
-                            if *ticket.node_addr() == addr {
-                                log::error!("Refusing to connect to self");
-                            } else {
-                                tokio::spawn(networking::connect(
-                                    endpoint.clone(),
-                                    ticket.node_addr().clone(),
-                                    connected_nodes.clone(),
-                                ));
-                                text.clear();
-                            }
+                            let gossip_layer = gossip_layer.clone();
+                            let node_addr = ticket.node_addr().clone();
+
+                            tokio::spawn(async move {
+                                gossip_layer.connect(node_addr).await.unwrap();
+                            });
                         }
                         Err(error) => {
                             log::error!("bad ticket {}: {}", text, error);
@@ -243,11 +261,34 @@ async fn main() -> anyhow::Result<()> {
 
                 draw_connection_grid(ui, &connection_infos);
 
-                let log_lines = log_lines.read();
+                approval_queue.retain_mut(|(node_id, sender)| {
+                    if sender.is_none() {
+                        return false;
+                    }
 
-                for line in log_lines.iter() {
-                    ui.label(line);
-                }
+                    if approved_nodes.contains(node_id) {
+                        sender.take().unwrap().send(true);
+                        return false;
+                    }
+
+                    ui.horizontal(|ui| {
+                        ui.label(node_id.fmt_short());
+
+                        let allow = ui.button("Allow").clicked();
+                        let deny = ui.button("Deny").clicked();
+
+                        if allow {
+                            sender.take().unwrap().send(true);
+                            false
+                        } else if deny {
+                            sender.take().unwrap().send(false);
+                            false
+                        } else {
+                            true
+                        }
+                    })
+                    .inner
+                });
             });
         }
 
