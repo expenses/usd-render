@@ -1,4 +1,4 @@
-use bbl_usd::{cpp, sdf, usd};
+use bbl_usd::{cpp, sdf, usd, vt};
 use dolly::prelude::*;
 use glfw::{Action, Context, Key};
 use glow::HasContext;
@@ -6,88 +6,21 @@ use iroh_net::ticket::NodeTicket;
 use std::str::FromStr;
 use std::sync::Arc;
 
+mod layers;
 mod logging;
 mod networking;
+mod util;
 
+use layers::LocalLayers;
 use networking::{NodeApprovalResponse, NodeSharingPolicy};
+use util::*;
 
 const ALPN: &[u8] = b"myalpn";
 
-fn compare_and_send<T: PartialEq>(sender: &mut tokio::sync::watch::Sender<T>, value: T) {
-    sender.send_if_modified(|current| {
-        if *current == value {
-            return false;
-        }
-        *current = value;
-        true
-    });
-}
-
-fn export_layer_to_string(layer: &sdf::LayerRefPtr) -> String {
-    let string = layer.export_to_string().unwrap();
-    string.as_str().to_owned()
-}
-
-struct LocalLayers {
-    root: sdf::LayerRefPtr,
-    current_sublayer: sdf::LayerRefPtr,
-    private: sdf::LayerRefPtr,
-    sublayer_index: u8,
-}
-
-impl LocalLayers {
-    fn new(root: &sdf::LayerHandle) -> Self {
-        let local_root = sdf::Layer::create_anonymous(".usdc");
-
-        root.insert_sub_layer_path(local_root.get_identifier(), 0);
-
-        let current_sublayer = sdf::Layer::create_anonymous(".usdc");
-
-        local_root.insert_sub_layer_path(current_sublayer.get_identifier(), 0);
-
-        let private = sdf::Layer::create_anonymous(".usdc");
-
-        root.insert_sub_layer_path(private.get_identifier(), 0);
-
-        Self {
-            root: local_root,
-            current_sublayer,
-            private,
-            sublayer_index: 0,
-        }
-    }
-
-    fn set_private_edit_target(&mut self, stage: &usd::StageRefPtr) {
-        let edit_target = usd::EditTarget::new_from_layer_ref_ptr(&self.private);
-        stage.set_edit_target(&edit_target);
-    }
-
-    fn set_public_edit_target(&mut self, stage: &usd::StageRefPtr) {
-        let edit_target = usd::EditTarget::new_from_layer_ref_ptr(&self.current_sublayer);
-        stage.set_edit_target(&edit_target);
-    }
-
-    fn add_new_sublayer(&mut self) {
-        let new_sublayer = sdf::Layer::create_anonymous(".usdc");
-
-        self.root
-            .insert_sub_layer_path(new_sublayer.get_identifier(), 0);
-
-        self.current_sublayer = new_sublayer;
-        self.sublayer_index += 1;
-    }
-
-    fn export(&self) -> (u8, cpp::String) {
-        let state = self.current_sublayer.export_to_string().unwrap();
-        (self.sublayer_index, state)
-    }
-}
-
 struct UsdState {
-    stage: usd::StageRefPtr,
+    _stage: usd::StageRefPtr,
     root_layer: sdf::LayerHandle,
     pseudo_root: usd::Prim,
-    xformable_avatar: usd::XformCommonAPI,
 }
 
 #[tokio::main]
@@ -142,20 +75,32 @@ async fn main() -> anyhow::Result<()> {
     let avatar = stage
         .define_prim(
             &format!("/avatars/avatar_{}", endpoint.node_id().fmt_short())[..],
-            "Sphere",
+            "Xform",
         )
         .map_err(|err| anyhow::anyhow!("{:?}", err))?;
+
+    let xformable = usd::Xformable::new(&avatar);
+
+    let position_xform_op =
+        xformable.add_xform_op(bbl_usd::ffi::usdGeom_XformOpType_usdGeom_XformOpType_TypeTranslate);
+    let rotation_xform_op =
+        xformable.add_xform_op(bbl_usd::ffi::usdGeom_XformOpType_usdGeom_XformOpType_TypeOrient);
+
+    let mut references = avatar.get_references();
+    references.add_reference(&cpp::String::new(&std::env::args().nth(2).unwrap()));
 
     local_layers.set_private_edit_target(&stage);
 
     {
-        let xformable_avatar = usd::XformCommonAPI::new(&avatar);
-        xformable_avatar.set_scale(glam::Vec3::splat(0.0), Default::default());
+        xformable
+            .add_xform_op(bbl_usd::ffi::usdGeom_XformOpType_usdGeom_XformOpType_TypeScale)
+            .set(
+                &vt::Value::from_dvec3(glam::DVec3::ZERO),
+                Default::default(),
+            );
     }
 
     let (mut state_tx, state_rx) = tokio::sync::watch::channel((0_u8, cpp::String::default()));
-
-    println!("{}", export_layer_to_string(&local_layers.private));
 
     compare_and_send(&mut state_tx, local_layers.export());
 
@@ -163,13 +108,10 @@ async fn main() -> anyhow::Result<()> {
 
     local_layers.set_public_edit_target(&stage);
 
-    let xformable_avatar = usd::XformCommonAPI::new(&avatar);
-
     let usd_state = Arc::new(tokio::sync::RwLock::new(UsdState {
-        stage,
         root_layer,
         pseudo_root: prim,
-        xformable_avatar,
+        _stage: stage,
     }));
 
     let mut camera: CameraRig = CameraRig::builder()
@@ -186,6 +128,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let params = usd::GLRenderParams::new();
+    params.set_cull_style(bbl_usd::ffi::usdImaging_GLCullStyle_usdImaging_GLCullStyle_CULL_STYLE_BACK_UNLESS_DOUBLE_SIDED);
 
     let mut size = glfw_backend.window.get_size();
     engine.set_render_viewport(glam::DVec4::new(0.0, 0.0, size.0 as _, size.1 as _));
@@ -348,9 +291,9 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
 
-                ui.heading("Connections");
-
-                draw_connection_grid(ui, &connection_infos);
+                ui.collapsing("Connections", |ui| {
+                    draw_connection_grid(ui, &connection_infos);
+                });
 
                 if !approval_queue.is_empty() {
                     ui.heading("Approval Queue");
@@ -413,9 +356,9 @@ async fn main() -> anyhow::Result<()> {
                     });
                 }
 
-                ui.heading("Log");
-
-                log_lines.draw(ui);
+                ui.collapsing("Log", |ui| {
+                    log_lines.draw(ui);
+                });
             });
         }
 
@@ -430,8 +373,14 @@ async fn main() -> anyhow::Result<()> {
 
         let usd_state = usd_state.write().await;
 
-        usd_state.xformable_avatar.set_translation(
-            transform.position.as_dvec3() - glam::DVec3::new(0.0, 0.2, 0.0),
+        position_xform_op.set(
+            &vt::Value::from_dvec3(transform.position.as_dvec3()),
+            Default::default(),
+        );
+        rotation_xform_op.set(
+            &vt::Value::from_dquat(
+                transform.rotation.as_f64() * glam::DQuat::from_rotation_y(180_f64.to_radians()),
+            ),
             Default::default(),
         );
 
@@ -459,58 +408,4 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
-}
-
-fn get_movement(window: &glfw::Window) -> glam::IVec3 {
-    let mut movement = glam::IVec3::ZERO;
-
-    movement.x += (window.get_key(glfw::Key::D) != glfw::Action::Release) as i32;
-    movement.x -= (window.get_key(glfw::Key::A) != glfw::Action::Release) as i32;
-
-    movement.y += (window.get_key(glfw::Key::W) != glfw::Action::Release) as i32;
-    movement.y -= (window.get_key(glfw::Key::S) != glfw::Action::Release) as i32;
-
-    movement.z += (window.get_key(glfw::Key::Q) != glfw::Action::Release) as i32;
-    movement.z -= (window.get_key(glfw::Key::Z) != glfw::Action::Release) as i32;
-
-    movement
-}
-
-fn view_from_camera_transform(
-    transform: dolly::transform::Transform<dolly::handedness::RightHanded>,
-) -> glam::DMat4 {
-    glam::DMat4::look_at_rh(
-        transform.position.as_dvec3(),
-        transform.position.as_dvec3() + transform.forward().as_dvec3(),
-        transform.up().as_dvec3(),
-    )
-}
-
-fn draw_connection(ui: &mut egui::Ui, connection_info: &iroh_net::magicsock::EndpointInfo) {
-    ui.label(connection_info.id.to_string());
-    ui.label(connection_info.public_key.fmt_short());
-    ui.label(format!("{}", connection_info.conn_type));
-    ui.label(match connection_info.latency {
-        Some(duration) => format!("{:.2} ms", duration.as_secs_f32() * 1000.0),
-        None => "N/A".to_string(),
-    });
-    ui.label(match connection_info.last_used {
-        Some(duration) => format!("{:.2} s", duration.as_secs_f32()),
-        None => "Never".to_string(),
-    });
-}
-
-fn draw_connection_grid(ui: &mut egui::Ui, connection_infos: &[iroh_net::magicsock::EndpointInfo]) {
-    if connection_infos.is_empty() {
-        ui.label("No current connections");
-    } else {
-        egui::Grid::new("connection_grid")
-            .striped(true)
-            .show(ui, |ui| {
-                for connection_info in connection_infos {
-                    draw_connection(ui, connection_info);
-                    ui.end_row();
-                }
-            });
-    }
 }

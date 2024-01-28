@@ -1,4 +1,4 @@
-use crate::{UsdState, ALPN};
+use crate::{layers, UsdState, ALPN};
 use bbl_usd::cpp;
 use iroh_net::{key::PublicKey, magic_endpoint::accept_conn, AddrInfo, MagicEndpoint, NodeAddr};
 use std::collections::{HashMap, HashSet};
@@ -294,8 +294,7 @@ async fn write_data_packet(
     index: u8,
     state: &cpp::String,
 ) -> anyhow::Result<()> {
-    stream.write_all(&[PacketType::Data as u8]).await?;
-    stream.write_all(&[index]).await?;
+    stream.write_all(&[PacketType::Data as u8, index]).await?;
     stream.write_all(state.as_bytes()).await?;
     Ok(())
 }
@@ -354,19 +353,12 @@ async fn handle_incoming(
 
                 {
                     let _lock = state.usd.write().await;
-
-                    while index as usize >= remote_sublayers.len() {
-                        let sublayer = bbl_usd::sdf::Layer::create_anonymous(".usda");
-                        remote_root_layer.insert_sub_layer_path(sublayer.get_identifier(), 0);
-
-                        remote_sublayers.push(sublayer);
-                    }
-
-                    let sublayer = &remote_sublayers[index as usize];
-
-                    if !sublayer.import_from_str(&cpp_string) {
-                        return Err(anyhow::anyhow!("Import of {:?} failed.", string));
-                    }
+                    layers::update_remote_sublayers(
+                        &remote_root_layer,
+                        &mut remote_sublayers,
+                        index as _,
+                        &cpp_string,
+                    )?;
                 }
 
                 log::info!("Got {:?} bytes from {}", string, node_id);
