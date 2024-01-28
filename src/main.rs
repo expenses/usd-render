@@ -1,4 +1,4 @@
-use bbl_usd::usd;
+use bbl_usd::{cpp, sdf, usd};
 use dolly::prelude::*;
 use glfw::{Action, Context, Key};
 use glow::HasContext;
@@ -13,6 +13,83 @@ use networking::{NodeApprovalResponse, NodeSharingPolicy};
 
 const ALPN: &[u8] = b"myalpn";
 
+fn compare_and_send<T: PartialEq>(sender: &mut tokio::sync::watch::Sender<T>, value: T) {
+    sender.send_if_modified(|current| {
+        if *current == value {
+            return false;
+        }
+        *current = value;
+        true
+    });
+}
+
+fn export_layer_to_string(layer: &sdf::LayerRefPtr) -> String {
+    let string = layer.export_to_string().unwrap();
+    string.as_str().to_owned()
+}
+
+struct LocalLayers {
+    root: sdf::LayerRefPtr,
+    current_sublayer: sdf::LayerRefPtr,
+    private: sdf::LayerRefPtr,
+    sublayer_index: u8,
+}
+
+impl LocalLayers {
+    fn new(root: &sdf::LayerHandle) -> Self {
+        let local_root = sdf::Layer::create_anonymous(".usdc");
+
+        root.insert_sub_layer_path(local_root.get_identifier(), 0);
+
+        let current_sublayer = sdf::Layer::create_anonymous(".usdc");
+
+        local_root.insert_sub_layer_path(current_sublayer.get_identifier(), 0);
+
+        let private = sdf::Layer::create_anonymous(".usdc");
+
+        root.insert_sub_layer_path(private.get_identifier(), 0);
+
+        Self {
+            root: local_root,
+            current_sublayer,
+            private,
+            sublayer_index: 0,
+        }
+    }
+
+    fn set_private_edit_target(&mut self, stage: &usd::StageRefPtr) {
+        let edit_target = usd::EditTarget::new_from_layer_ref_ptr(&self.private);
+        stage.set_edit_target(&edit_target);
+    }
+
+    fn set_public_edit_target(&mut self, stage: &usd::StageRefPtr) {
+        let edit_target = usd::EditTarget::new_from_layer_ref_ptr(&self.current_sublayer);
+        stage.set_edit_target(&edit_target);
+    }
+
+    fn add_new_sublayer(&mut self) {
+        let new_sublayer = sdf::Layer::create_anonymous(".usdc");
+
+        self.root
+            .insert_sub_layer_path(new_sublayer.get_identifier(), 0);
+
+        self.current_sublayer = new_sublayer;
+        self.sublayer_index += 1;
+    }
+
+    fn export(&self) -> (u8, cpp::String) {
+        let state = self.current_sublayer.export_to_string().unwrap();
+        (self.sublayer_index, state)
+    }
+}
+
+struct UsdState {
+    stage: usd::StageRefPtr,
+    root_layer: sdf::LayerHandle,
+    pseudo_root: usd::Prim,
+    xformable_avatar: usd::XformCommonAPI,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     logging::setup()?;
@@ -21,11 +98,10 @@ async fn main() -> anyhow::Result<()> {
     let (approval_tx, mut approval_rx) = tokio::sync::mpsc::channel(10);
     let connected_nodes = networking::ConnectedNodes::default();
 
-    let endpoint_handle = tokio::spawn(
-        iroh_net::MagicEndpoint::builder()
-            .alpns(vec![ALPN.to_owned()])
-            .bind(0),
-    );
+    let endpoint = iroh_net::MagicEndpoint::builder()
+        .alpns(vec![ALPN.to_owned()])
+        .bind(0)
+        .await?;
 
     let mut glfw_backend =
         egui_window_glfw_passthrough::GlfwBackend::new(egui_window_glfw_passthrough::GlfwConfig {
@@ -48,9 +124,53 @@ async fn main() -> anyhow::Result<()> {
 
     let engine = usd::GLEngine::new();
 
-    let stage = usd::Stage::open(std::env::args().nth(1).unwrap()).unwrap();
+    let stage = usd::Stage::create_in_memory();
+    // Root layer that holds all other layers.
+    let root_layer = stage.get_root_layer();
+
+    let base_layer = sdf::Layer::find_or_open(&std::env::args().nth(1).unwrap());
+
+    root_layer.insert_sub_layer_path(base_layer.get_identifier(), 0);
+
+    let mut local_layers = LocalLayers::new(&root_layer);
 
     let prim = stage.pseudo_root();
+
+    local_layers.set_public_edit_target(&stage);
+
+    // note: prefix with _avatar as names can't start with numbers.
+    let avatar = stage
+        .define_prim(
+            &format!("/avatars/avatar_{}", endpoint.node_id().fmt_short())[..],
+            "Sphere",
+        )
+        .map_err(|err| anyhow::anyhow!("{:?}", err))?;
+
+    local_layers.set_private_edit_target(&stage);
+
+    {
+        let xformable_avatar = usd::XformCommonAPI::new(&avatar);
+        xformable_avatar.set_scale(glam::Vec3::splat(0.0), Default::default());
+    }
+
+    let (mut state_tx, state_rx) = tokio::sync::watch::channel((0_u8, cpp::String::default()));
+
+    println!("{}", export_layer_to_string(&local_layers.private));
+
+    compare_and_send(&mut state_tx, local_layers.export());
+
+    local_layers.add_new_sublayer();
+
+    local_layers.set_public_edit_target(&stage);
+
+    let xformable_avatar = usd::XformCommonAPI::new(&avatar);
+
+    let usd_state = Arc::new(tokio::sync::RwLock::new(UsdState {
+        stage,
+        root_layer,
+        pseudo_root: prim,
+        xformable_avatar,
+    }));
 
     let mut camera: CameraRig = CameraRig::builder()
         .with(Position::new(glam::Vec3::splat(2.0)))
@@ -77,10 +197,7 @@ async fn main() -> anyhow::Result<()> {
 
     let mut text = String::new();
 
-    let endpoint = endpoint_handle.await??;
     let addr = endpoint.my_addr().await?;
-
-    let (state_tx, state_rx) = tokio::sync::watch::channel(String::new());
 
     let networking_state = networking::State {
         endpoint: endpoint.clone(),
@@ -88,7 +205,13 @@ async fn main() -> anyhow::Result<()> {
         approval_queue: approval_tx.clone(),
         connected_nodes: connected_nodes.clone(),
         state: state_rx.clone(),
+        usd: usd_state.clone(),
+        exported_local_layers: Default::default(),
     };
+
+    tokio::spawn(networking::update_exported_local_layers(
+        networking_state.clone(),
+    ));
 
     tokio::spawn({
         let networking_state = networking_state.clone();
@@ -169,27 +292,6 @@ async fn main() -> anyhow::Result<()> {
                 .driver_mut::<YawPitch>()
                 .rotate_yaw_pitch(yaw_pitch.x as _, yaw_pitch.y as _);
         }
-
-        // Update usd camera state
-
-        let transform = camera.update(1.0 / 60.0);
-
-        engine.set_camera_state(view_from_camera_transform(transform), proj);
-
-        state_tx.send_if_modified(|old| {
-            let new = format!(
-                "{}",
-                std::time::SystemTime::now()
-                    .duration_since(std::time::SystemTime::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs()
-            );
-            if *old == new {
-                return false;
-            }
-            *old = new;
-            true
-        });
 
         // Egui
 
@@ -320,13 +422,31 @@ async fn main() -> anyhow::Result<()> {
         let output = egui.end_frame();
         let meshes = egui.tessellate(output.shapes, output.pixels_per_point);
 
-        // Rendering
+        // Update usd camera state
 
+        let transform = camera.update(1.0 / 60.0);
+
+        engine.set_camera_state(view_from_camera_transform(transform), proj);
+
+        let usd_state = usd_state.write().await;
+
+        usd_state.xformable_avatar.set_translation(
+            transform.position.as_dvec3() - glam::DVec3::new(0.0, 0.2, 0.0),
+            Default::default(),
+        );
+
+        let usd_state = usd_state.downgrade();
+
+        compare_and_send(&mut state_tx, local_layers.export());
+
+        // Rendering
         unsafe {
             gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
         }
 
-        engine.render(&prim, &params);
+        engine.render(&usd_state.pseudo_root, &params);
+
+        drop(usd_state);
 
         painter.paint_and_update_textures(
             [size.0 as u32, size.1 as u32],

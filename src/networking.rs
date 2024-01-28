@@ -1,9 +1,10 @@
-use crate::ALPN;
-use tokio_stream::StreamExt;
+use crate::{UsdState, ALPN};
+use bbl_usd::cpp;
 use iroh_net::{key::PublicKey, magic_endpoint::accept_conn, AddrInfo, MagicEndpoint, NodeAddr};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{oneshot, watch};
+use tokio_stream::StreamExt;
 
 pub type ApprovedNodes = Arc<tokio::sync::RwLock<HashMap<PublicKey, NodeSharingPolicy>>>;
 pub type ConnectedNodes = Arc<tokio::sync::Mutex<HashSet<PublicKey>>>;
@@ -62,7 +63,9 @@ pub struct State {
     pub approved_nodes: ApprovedNodes,
     pub approval_queue: ApprovalQueue,
     pub connected_nodes: ConnectedNodes,
-    pub state: watch::Receiver<String>,
+    pub state: watch::Receiver<(u8, cpp::String)>,
+    pub usd: Arc<tokio::sync::RwLock<UsdState>>,
+    pub exported_local_layers: Arc<tokio::sync::RwLock<Vec<cpp::String>>>,
 }
 
 pub async fn accept(connecting: quinn::Connecting, state: State) {
@@ -274,12 +277,43 @@ async fn send_third_parties(
     Ok(())
 }
 
-async fn handle_outgoing(connection: quinn::Connection, state: State) -> anyhow::Result<()> {
+pub async fn update_exported_local_layers(state: State) {
     let mut state_stream = tokio_stream::wrappers::WatchStream::from_changes(state.state);
-    while let Some(state) = state_stream.next().await {
+    while let Some((index, exported_layer)) = state_stream.next().await {
+        let index = index as usize;
+        let mut exported_local_layers = state.exported_local_layers.write().await;
+        while index >= exported_local_layers.len() {
+            exported_local_layers.push(cpp::String::new("#usda 1.0"));
+        }
+        exported_local_layers[index] = exported_layer;
+    }
+}
+
+async fn write_data_packet(
+    stream: &mut quinn::SendStream,
+    index: u8,
+    state: &cpp::String,
+) -> anyhow::Result<()> {
+    stream.write_all(&[PacketType::Data as u8]).await?;
+    stream.write_all(&[index]).await?;
+    stream.write_all(state.as_bytes()).await?;
+    Ok(())
+}
+
+async fn handle_outgoing(connection: quinn::Connection, state: State) -> anyhow::Result<()> {
+    {
         let mut stream = connection.open_uni().await?;
-        stream.write_all(&[PacketType::Data as u8]).await?;
-        stream.write_all(state.as_bytes()).await?;
+        let existing_layers = state.exported_local_layers.read().await;
+        for (index, state) in existing_layers.iter().enumerate() {
+            println!("{}: {}", index, state.as_str());
+            write_data_packet(&mut stream, index as u8, state).await?;
+        }
+    }
+
+    let mut state_stream = tokio_stream::wrappers::WatchStream::from_changes(state.state);
+    while let Some((index, state)) = state_stream.next().await {
+        let mut stream = connection.open_uni().await?;
+        write_data_packet(&mut stream, index, &state).await?;
     }
     Ok(())
 }
@@ -289,6 +323,16 @@ async fn handle_incoming(
     node_id: PublicKey,
     connection: quinn::Connection,
 ) -> anyhow::Result<()> {
+    let mut remote_sublayers = Vec::new();
+
+    let remote_root_layer = bbl_usd::sdf::Layer::create_anonymous(".usda");
+    state
+        .usd
+        .write()
+        .await
+        .root_layer
+        .insert_sub_layer_path(remote_root_layer.get_identifier(), 0);
+
     loop {
         let mut stream = connection.accept_uni().await?;
         let ty = {
@@ -301,12 +345,31 @@ async fn handle_incoming(
         };
         match ty {
             PacketType::Data => {
+                let mut index = 0_u8;
+                stream.read_exact(std::slice::from_mut(&mut index)).await?;
+
                 let data = stream.read_to_end(1024 * 1024).await?;
-                log::info!(
-                    "Got {:?} bytes from {}",
-                    std::str::from_utf8(&data),
-                    node_id
-                );
+                let string = std::str::from_utf8(&data)?;
+                let cpp_string = bbl_usd::cpp::String::new(&string);
+
+                {
+                    let _lock = state.usd.write().await;
+
+                    while index as usize >= remote_sublayers.len() {
+                        let sublayer = bbl_usd::sdf::Layer::create_anonymous(".usda");
+                        remote_root_layer.insert_sub_layer_path(sublayer.get_identifier(), 0);
+
+                        remote_sublayers.push(sublayer);
+                    }
+
+                    let sublayer = &remote_sublayers[index as usize];
+
+                    if !sublayer.import_from_str(&cpp_string) {
+                        return Err(anyhow::anyhow!("Import of {:?} failed.", string));
+                    }
+                }
+
+                log::info!("Got {:?} bytes from {}", string, node_id);
             }
             PacketType::NewNode => {
                 let data = stream.read_to_end(1024 * 1024).await?;
