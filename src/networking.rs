@@ -349,7 +349,7 @@ async fn handle_incoming(
 
                 let data = stream.read_to_end(1024 * 1024).await?;
                 let string = std::str::from_utf8(&data)?;
-                let cpp_string = bbl_usd::cpp::String::new(&string);
+                let cpp_string = bbl_usd::cpp::String::new(string);
 
                 {
                     let _lock = state.usd.write().await;

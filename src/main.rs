@@ -3,19 +3,17 @@ use clap::Parser;
 use dolly::prelude::*;
 use glfw::{Action, Context, Key};
 use glow::HasContext;
-use iroh_net::{key::SecretKey, ticket::NodeTicket};
+use iroh_net::key::SecretKey;
 use std::path::PathBuf;
-use std::str::FromStr;
 use std::sync::Arc;
 
 mod layers;
 mod logging;
 mod networking;
+mod ui;
 mod util;
 
 use layers::LocalLayers;
-use networking::{NodeApprovalResponse, NodeSharingPolicy};
-use util::*;
 
 const ALPN: &[u8] = b"myalpn";
 
@@ -126,7 +124,7 @@ async fn main() -> anyhow::Result<()> {
 
     let (mut state_tx, state_rx) = tokio::sync::watch::channel((0_u8, cpp::String::default()));
 
-    compare_and_send(&mut state_tx, local_layers.export());
+    util::compare_and_send(&mut state_tx, local_layers.export());
 
     local_layers.add_new_sublayer();
 
@@ -242,7 +240,7 @@ async fn main() -> anyhow::Result<()> {
         let movement = if egui.wants_keyboard_input() {
             glam::IVec3::ZERO
         } else {
-            get_movement(&glfw_backend.window)
+            util::get_movement(&glfw_backend.window)
         }
         .as_vec3()
             * 0.1;
@@ -278,143 +276,23 @@ async fn main() -> anyhow::Result<()> {
             let log_lines = logging::get_lines().await;
 
             egui::Window::new("Network").show(&egui, |ui| {
-                ui.label(format!("Node ID: {}", addr.node_id.fmt_short()));
-                ui.label("Node Ticket (click to copy):");
-                let node_ticket_str = ticket.to_string();
-                if ui.button(&node_ticket_str).clicked() {
-                    glfw_backend.window.set_clipboard_string(&node_ticket_str);
-                }
+                ui::draw_node_info(ui, &addr, &ticket, &mut glfw_backend.window);
 
-                let response = ui
-                    .horizontal(|ui| {
-                        ui.label("Connect to node: ");
-                        ui.add(egui::widgets::text_edit::TextEdit::singleline(&mut text))
-                    })
-                    .inner;
-
-                if response.lost_focus()
-                    && response.ctx.input(|ctx| ctx.key_pressed(egui::Key::Enter))
-                {
-                    match NodeTicket::from_str(&text) {
-                        Ok(ticket) => {
-                            let node_addr = ticket.node_addr().clone();
-                            if node_addr == addr {
-                                log::error!("Not connecting to self.");
-                            } else {
-                                tokio::spawn(networking::connect(
-                                    networking_state.clone(),
-                                    node_addr,
-                                    None,
-                                ));
-                                text.clear();
-                            }
-                        }
-                        Err(error) => {
-                            log::error!("bad ticket {}: {}", text, error);
-                        }
-                    }
-                }
+                ui::draw_connect_to_node(ui, &networking_state, &addr, &mut text);
 
                 ui.collapsing("Connections", |ui| {
-                    draw_connection_grid(ui, &connection_infos);
+                    ui::draw_connection_grid(ui, &connection_infos);
                 });
 
                 if !approval_queue.is_empty() {
-                    ui.heading("Approval Queue");
-
-                    approval_queue.retain_mut(|(node_id, direction, sender)| {
-                        if sender.is_none() {
-                            return false;
-                        }
-
-                        if let Some(node_sharing) = approved_nodes_read.get(node_id) {
-                            let _ = sender
-                                .take()
-                                .unwrap()
-                                .send(NodeApprovalResponse::Approved(node_sharing.clone()));
-                            return false;
-                        }
-
-                        ui.horizontal(|ui| {
-                            ui.label(node_id.fmt_short());
-                            match direction {
-                                networking::NodeApprovalDirection::Incoming => {
-                                    ui.label("Incoming");
-                                }
-                                networking::NodeApprovalDirection::Outgoing { referrer } => {
-                                    ui.label(format!(
-                                        "Outgoing (referred to by {})",
-                                        referrer.fmt_short()
-                                    ));
-                                }
-                            }
-
-                            let mut retain = true;
-
-                            if ui.button("Allow").clicked() {
-                                let _ =
-                                    sender.take().unwrap().send(NodeApprovalResponse::Approved(
-                                        NodeSharingPolicy::AllExcept(Default::default()),
-                                    ));
-                                retain = false;
-                            }
-
-                            if ui.button("Allow (private)").clicked() {
-                                let _ =
-                                    sender.take().unwrap().send(NodeApprovalResponse::Approved(
-                                        NodeSharingPolicy::NoneExcept(Default::default()),
-                                    ));
-                                retain = false;
-                            }
-                            if ui.button("Deny").clicked() {
-                                let _ = sender
-                                    .take()
-                                    .unwrap()
-                                    .send(networking::NodeApprovalResponse::Denied);
-                                retain = false;
-                            }
-
-                            retain
-                        })
-                        .inner
-                    });
+                    ui::draw_approval_queue(ui, &mut approval_queue, &approved_nodes_read);
                 }
 
                 ui.collapsing("Log", |ui| {
                     log_lines.draw(ui);
                 });
 
-                if ui.button("export").clicked() {
-                    tokio::spawn({
-                        let networking_state = networking_state.clone();
-                        async move {
-                            let state = networking_state.usd.read().await;
-                            state.stage.export(&cpp::String::new("export.usdc"));
-                        }
-                    });
-                }
-                if ui.button("save keyfile").clicked() {
-                    tokio::spawn({
-                        let endpoint = networking_state.endpoint.clone();
-                        async move {
-                            let function = || async move {
-                                let key = endpoint.secret_key();
-                                let serialized = key.to_openssh()?;
-                                // None if cancelled.
-                                if let Some(filehandle) =
-                                    rfd::AsyncFileDialog::new().save_file().await
-                                {
-                                    filehandle.write(serialized.as_bytes()).await?;
-                                }
-                                Ok::<_, anyhow::Error>(())
-                            };
-
-                            if let Err(error) = function().await {
-                                log::error!("{}", error);
-                            }
-                        }
-                    });
-                }
+                ui::draw_buttons(ui, &networking_state);
             });
         }
 
@@ -425,7 +303,7 @@ async fn main() -> anyhow::Result<()> {
 
         let transform = camera.update(1.0 / 60.0);
 
-        engine.set_camera_state(view_from_camera_transform(transform), proj);
+        engine.set_camera_state(util::view_from_camera_transform(transform), proj);
 
         let usd_state = usd_state.write().await;
 
@@ -442,7 +320,7 @@ async fn main() -> anyhow::Result<()> {
 
         let usd_state = usd_state.downgrade();
 
-        compare_and_send(&mut state_tx, local_layers.export());
+        util::compare_and_send(&mut state_tx, local_layers.export());
 
         // Rendering
         unsafe {

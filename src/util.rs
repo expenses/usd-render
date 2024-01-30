@@ -32,35 +32,3 @@ pub fn view_from_camera_transform(
         transform.up().as_dvec3(),
     )
 }
-
-pub fn draw_connection(ui: &mut egui::Ui, connection_info: &iroh_net::magicsock::EndpointInfo) {
-    ui.label(connection_info.id.to_string());
-    ui.label(connection_info.public_key.fmt_short());
-    ui.label(format!("{}", connection_info.conn_type));
-    ui.label(match connection_info.latency {
-        Some(duration) => format!("{:.2} ms", duration.as_secs_f32() * 1000.0),
-        None => "N/A".to_string(),
-    });
-    ui.label(match connection_info.last_used {
-        Some(duration) => format!("{:.2} s", duration.as_secs_f32()),
-        None => "Never".to_string(),
-    });
-}
-
-pub fn draw_connection_grid(
-    ui: &mut egui::Ui,
-    connection_infos: &[iroh_net::magicsock::EndpointInfo],
-) {
-    if connection_infos.is_empty() {
-        ui.label("No current connections");
-    } else {
-        egui::Grid::new("connection_grid")
-            .striped(true)
-            .show(ui, |ui| {
-                for connection_info in connection_infos {
-                    draw_connection(ui, connection_info);
-                    ui.end_row();
-                }
-            });
-    }
-}
