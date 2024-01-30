@@ -1,8 +1,5 @@
-use lazy_static::lazy_static;
-
-lazy_static! {
-    static ref LINES: tokio::sync::RwLock<Vec<(log::Level, String)>> = Default::default();
-}
+static LINES: tokio::sync::RwLock<Vec<(log::Level, String)>> =
+    tokio::sync::RwLock::const_new(Vec::new());
 
 struct Log;
 

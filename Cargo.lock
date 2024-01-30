@@ -3918,7 +3918,6 @@ dependencies = [
  "glfw-passthrough",
  "glow",
  "iroh-net",
- "lazy_static",
  "log",
  "postcard",
  "quinn",
