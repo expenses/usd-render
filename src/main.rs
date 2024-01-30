@@ -1,8 +1,10 @@
 use bbl_usd::{cpp, sdf, usd, vt};
+use clap::Parser;
 use dolly::prelude::*;
 use glfw::{Action, Context, Key};
 use glow::HasContext;
-use iroh_net::ticket::NodeTicket;
+use iroh_net::{key::SecretKey, ticket::NodeTicket};
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -18,23 +20,45 @@ use util::*;
 const ALPN: &[u8] = b"myalpn";
 
 struct UsdState {
-    _stage: usd::StageRefPtr,
+    stage: usd::StageRefPtr,
     root_layer: sdf::LayerHandle,
     pseudo_root: usd::Prim,
 }
 
+#[derive(Parser, Debug)]
+struct Args {
+    base: String,
+    avatar: String,
+    #[arg(long)]
+    keyfile: Option<PathBuf>,
+    #[arg(long)]
+    peers_data: Option<PathBuf>,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let mut args = Args::parse();
+
     logging::setup()?;
 
     let approved_nodes = networking::ApprovedNodes::default();
     let (approval_tx, mut approval_rx) = tokio::sync::mpsc::channel(10);
     let connected_nodes = networking::ConnectedNodes::default();
 
-    let endpoint = iroh_net::MagicEndpoint::builder()
-        .alpns(vec![ALPN.to_owned()])
-        .bind(0)
-        .await?;
+    let secret_key = match args.keyfile {
+        Some(keyfile) => SecretKey::try_from_openssh(std::fs::read(keyfile)?)?,
+        None => SecretKey::generate(),
+    };
+
+    let mut endpoint_builder = iroh_net::MagicEndpoint::builder()
+        .secret_key(secret_key)
+        .alpns(vec![ALPN.to_owned()]);
+
+    if let Some(peers_data_path) = args.peers_data.take() {
+        endpoint_builder = endpoint_builder.peers_data_path(peers_data_path);
+    }
+
+    let endpoint = endpoint_builder.bind(0).await?;
 
     let mut glfw_backend =
         egui_window_glfw_passthrough::GlfwBackend::new(egui_window_glfw_passthrough::GlfwConfig {
@@ -61,7 +85,7 @@ async fn main() -> anyhow::Result<()> {
     // Root layer that holds all other layers.
     let root_layer = stage.get_root_layer();
 
-    let base_layer = sdf::Layer::find_or_open(&std::env::args().nth(1).unwrap());
+    let base_layer = sdf::Layer::find_or_open(&args.base);
 
     root_layer.insert_sub_layer_path(base_layer.get_identifier(), 0);
 
@@ -87,7 +111,7 @@ async fn main() -> anyhow::Result<()> {
         xformable.add_xform_op(bbl_usd::ffi::usdGeom_XformOpType_usdGeom_XformOpType_TypeOrient);
 
     let mut references = avatar.get_references();
-    references.add_reference(&cpp::String::new(&std::env::args().nth(2).unwrap()));
+    references.add_reference(&cpp::String::new(&args.avatar));
 
     local_layers.set_private_edit_target(&stage);
 
@@ -111,7 +135,7 @@ async fn main() -> anyhow::Result<()> {
     let usd_state = Arc::new(tokio::sync::RwLock::new(UsdState {
         root_layer,
         pseudo_root: prim,
-        _stage: stage,
+        stage,
     }));
 
     let mut camera: CameraRig = CameraRig::builder()
@@ -359,6 +383,38 @@ async fn main() -> anyhow::Result<()> {
                 ui.collapsing("Log", |ui| {
                     log_lines.draw(ui);
                 });
+
+                if ui.button("export").clicked() {
+                    tokio::spawn({
+                        let networking_state = networking_state.clone();
+                        async move {
+                            let state = networking_state.usd.read().await;
+                            state.stage.export(&cpp::String::new("export.usdc"));
+                        }
+                    });
+                }
+                if ui.button("save keyfile").clicked() {
+                    tokio::spawn({
+                        let endpoint = networking_state.endpoint.clone();
+                        async move {
+                            let function = || async move {
+                                let key = endpoint.secret_key();
+                                let serialized = key.to_openssh()?;
+                                // None if cancelled.
+                                if let Some(filehandle) =
+                                    rfd::AsyncFileDialog::new().save_file().await
+                                {
+                                    filehandle.write(serialized.as_bytes()).await?;
+                                }
+                                Ok::<_, anyhow::Error>(())
+                            };
+
+                            if let Err(error) = function().await {
+                                log::error!("{}", error);
+                            }
+                        }
+                    });
+                }
             });
         }
 
@@ -406,6 +462,8 @@ async fn main() -> anyhow::Result<()> {
 
         glfw_backend.window.swap_buffers();
     }
+
+    endpoint.close(0_u32.into(), b"user closed").await?;
 
     Ok(())
 }
