@@ -34,3 +34,4 @@ log = "0.4.20"
 tokio = "1.35.1"
 tokio-stream = { version = "0.1.14", features = ["sync"] }
 rfd = "0.13.0"
+arrayvec = "0.7.4"

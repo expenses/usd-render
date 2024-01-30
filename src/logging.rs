@@ -19,6 +19,8 @@ impl log::Log for Log {
 
         tokio::spawn(async move {
             let mut lines = LINES.write().await;
+            let to_remove = lines.len().saturating_sub(1000);
+            lines.drain(..to_remove);
             lines.push(formatted);
         });
     }

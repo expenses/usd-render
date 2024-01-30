@@ -160,8 +160,6 @@ async fn main() -> anyhow::Result<()> {
 
     let proj = glam::DMat4::perspective_rh_gl(59.0_f64.to_radians(), 1.0, 0.01, 1000.0);
 
-    let mut text = String::new();
-
     let addr = endpoint.my_addr().await?;
 
     let networking_state = networking::State {
@@ -191,7 +189,7 @@ async fn main() -> anyhow::Result<()> {
 
     println!("{}", ticket);
 
-    let mut approval_queue = Vec::new();
+    let mut ui_state = ui::State::default();
 
     while !glfw_backend.window.should_close() {
         glfw_backend.glfw.poll_events();
@@ -261,31 +259,33 @@ async fn main() -> anyhow::Result<()> {
         // Egui
 
         {
-            let connection_infos = endpoint.connection_infos().await?;
-
-            while let Ok(request) = approval_rx.try_recv() {
-                approval_queue.push((
-                    request.node_id,
-                    request.direction,
-                    Some(request.response_sender),
-                ));
+            while !ui_state.approval_queue.is_full() {
+                if let Ok(request) = approval_rx.try_recv() {
+                    ui_state.approval_queue.push((
+                        request.node_id,
+                        request.direction,
+                        Some(request.response_sender),
+                    ));
+                } else {
+                    break;
+                }
             }
 
             let approved_nodes_read = approved_nodes.read().await;
-
+            let connection_infos = endpoint.connection_infos().await?;
             let log_lines = logging::get_lines().await;
 
             egui::Window::new("Network").show(&egui, |ui| {
                 ui::draw_node_info(ui, &addr, &ticket, &mut glfw_backend.window);
 
-                ui::draw_connect_to_node(ui, &networking_state, &addr, &mut text);
+                ui::draw_connect_to_node(ui, &networking_state, &addr, &mut ui_state);
 
                 ui.collapsing("Connections", |ui| {
                     ui::draw_connection_grid(ui, &connection_infos);
                 });
 
-                if !approval_queue.is_empty() {
-                    ui::draw_approval_queue(ui, &mut approval_queue, &approved_nodes_read);
+                if !ui_state.approval_queue.is_empty() {
+                    ui::draw_approval_queue(ui, &mut ui_state, &approved_nodes_read);
                 }
 
                 ui.collapsing("Log", |ui| {

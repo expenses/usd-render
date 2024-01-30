@@ -55,17 +55,19 @@ pub fn draw_connect_to_node(
     ui: &mut egui::Ui,
     networking_state: &networking::State,
     addr: &NodeAddr,
-    text: &mut String,
+    state: &mut State,
 ) {
     let response = ui
         .horizontal(|ui| {
             ui.label("Connect to node: ");
-            ui.add(egui::widgets::text_edit::TextEdit::singleline(text))
+            ui.add(egui::widgets::text_edit::TextEdit::singleline(
+                &mut state.ticket_input,
+            ))
         })
         .inner;
 
     if response.lost_focus() && response.ctx.input(|ctx| ctx.key_pressed(egui::Key::Enter)) {
-        match NodeTicket::from_str(text) {
+        match NodeTicket::from_str(&state.ticket_input) {
             Ok(ticket) => {
                 let node_addr = ticket.node_addr().clone();
                 if node_addr == *addr {
@@ -76,11 +78,11 @@ pub fn draw_connect_to_node(
                         node_addr,
                         None,
                     ));
-                    text.clear();
+                    state.ticket_input.clear();
                 }
             }
             Err(error) => {
-                log::error!("bad ticket {}: {}", text, error);
+                log::error!("bad ticket {}: {}", state.ticket_input, error);
             }
         }
     }
@@ -120,16 +122,12 @@ pub fn draw_buttons(ui: &mut egui::Ui, networking_state: &networking::State) {
 
 pub fn draw_approval_queue(
     ui: &mut egui::Ui,
-    approval_queue: &mut Vec<(
-        PublicKey,
-        NodeApprovalDirection,
-        Option<oneshot::Sender<NodeApprovalResponse>>,
-    )>,
+    state: &mut State,
     approved_nodes: &HashMap<PublicKey, NodeSharingPolicy>,
 ) {
     ui.heading("Approval Queue");
 
-    approval_queue.retain_mut(|(node_id, direction, sender)| {
+    state.approval_queue.retain(|(node_id, direction, sender)| {
         if sender.is_none() {
             return false;
         }
@@ -183,4 +181,17 @@ pub fn draw_approval_queue(
         })
         .inner
     });
+}
+
+#[derive(Default)]
+pub struct State {
+    pub approval_queue: arrayvec::ArrayVec<
+        (
+            PublicKey,
+            NodeApprovalDirection,
+            Option<oneshot::Sender<NodeApprovalResponse>>,
+        ),
+        10,
+    >,
+    pub ticket_input: String,
 }

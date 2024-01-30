@@ -4241,6 +4241,7 @@ name = "usd-render"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arrayvec",
  "bbl-usd",
  "clap",
  "dolly",
