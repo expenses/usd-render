@@ -1,4 +1,4 @@
-use bbl_usd::{cpp, sdf, usd, vt};
+use bbl_usd::{cpp, sdf, usd, vt, tf};
 use clap::Parser;
 use dolly::prelude::*;
 use glfw::{Action, Context, Key};
@@ -78,6 +78,7 @@ async fn main() -> anyhow::Result<()> {
     let mut painter = egui_glow::painter::Painter::new(gl.clone(), "", None)?;
 
     let engine = usd::GLEngine::new();
+    engine.set_renderer_aov(&tf::Token::new("color"));
 
     let stage = usd::Stage::create_in_memory();
     // Root layer that holds all other layers.
@@ -222,7 +223,7 @@ async fn main() -> anyhow::Result<()> {
         }
 
         // Handle resizing
-        let current_size = glfw_backend.window.get_size();
+        let current_size = glfw_backend.window.get_framebuffer_size();
         if current_size != size {
             size = current_size;
             engine.set_render_viewport(glam::DVec4::new(0.0, 0.0, size.0 as _, size.1 as _));

@@ -25,6 +25,7 @@ proj = frustum.ComputeProjectionMatrix()
 view = frustum.ComputeViewMatrix()
 
 engine = UsdImagingGL.Engine()
+engine.SetRendererAov("color")
 
 params = UsdImagingGL.RenderParams()
 params.enableLighting = False
