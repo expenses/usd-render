@@ -152,6 +152,7 @@ async fn main() -> anyhow::Result<()> {
 
     let params = usd::GLRenderParams::new();
     params.set_cull_style(bbl_usd::ffi::usdImaging_GLCullStyle_usdImaging_GLCullStyle_CULL_STYLE_BACK_UNLESS_DOUBLE_SIDED);
+    params.set_color_correction_mode(&tf::Token::new("sRGB"));
 
     let mut size = glfw_backend.window.get_size();
     engine.set_render_viewport(glam::DVec4::new(0.0, 0.0, size.0 as _, size.1 as _));
