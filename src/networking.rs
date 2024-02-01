@@ -1,12 +1,12 @@
 use crate::{ipc, layers, UsdState, ALPN};
 use bbl_usd::cpp;
 use iroh_net::{key::PublicKey, magic_endpoint::accept_conn, AddrInfo, MagicEndpoint, NodeAddr};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::{oneshot, watch};
 
-pub type ApprovedNodes = Arc<tokio::sync::RwLock<HashMap<PublicKey, NodeSharingPolicy>>>;
-pub type ConnectedNodes = Arc<tokio::sync::Mutex<HashSet<PublicKey>>>;
+pub type ApprovedNodes = Arc<scc::HashMap<PublicKey, NodeSharingPolicy>>;
+pub type ConnectedNodes = Arc<scc::HashSet<PublicKey>>;
 pub type ApprovalQueue = tokio::sync::mpsc::Sender<NodeApprovalRequest>;
 
 pub struct NodeApprovalRequest {
@@ -97,7 +97,7 @@ async fn wait_for_approval(
     node_id: PublicKey,
     direction: NodeApprovalDirection,
 ) -> anyhow::Result<bool> {
-    if !state.approved_nodes.read().await.contains_key(&node_id) {
+    if !state.approved_nodes.contains_async(&node_id).await {
         let (tx, rx) = oneshot::channel();
         state
             .approval_queue
@@ -113,11 +113,10 @@ async fn wait_for_approval(
             NodeApprovalResponse::Denied => return Ok(false),
         };
 
-        state
+        let _ = state
             .approved_nodes
-            .write()
-            .await
-            .insert(node_id, node_sharing);
+            .insert_async(node_id, node_sharing)
+            .await;
     }
 
     Ok(true)
@@ -144,7 +143,7 @@ pub async fn connect(state: State, addr: NodeAddr, referrer: Option<PublicKey>) 
         }
     }
 
-    if state.connected_nodes.lock().await.contains(&addr.node_id) {
+    if state.connected_nodes.contains_async(&addr.node_id).await {
         log::warn!("Not connecting to {}: already connected", addr.node_id);
         return;
     }
@@ -170,9 +169,9 @@ async fn handle_connection(
     let mut third_parties = Vec::new();
 
     {
-        let mut connected_nodes = state.connected_nodes.lock().await;
+        let connected_nodes = &state.connected_nodes;
 
-        if connected_nodes.contains(&connection_node_id) {
+        if connected_nodes.contains_async(&connection_node_id).await {
             log::info!(
                 "Ending new connection to {}: already connected",
                 connection_node_id
@@ -181,10 +180,18 @@ async fn handle_connection(
             return;
         }
 
-        for &existing_node_id in connected_nodes.iter() {
-            match state.approved_nodes.read().await.get(&existing_node_id) {
+        let mut existing_node_ids = Vec::new();
+
+        connected_nodes
+            .scan_async(|existing_node_id| {
+                existing_node_ids.push(*existing_node_id);
+            })
+            .await;
+
+        for existing_node_id in existing_node_ids {
+            match state.approved_nodes.get_async(&existing_node_id).await {
                 Some(sharing_policy) => {
-                    if !sharing_policy.allows(connection_node_id) {
+                    if !sharing_policy.get().allows(connection_node_id) {
                         log::info!("Not sharing {} to {}", existing_node_id, connection_node_id);
                         continue;
                     }
@@ -219,7 +226,7 @@ async fn handle_connection(
             });
         }
 
-        connected_nodes.insert(connection_node_id);
+        let _ = connected_nodes.insert_async(connection_node_id).await;
     }
 
     log::info!("Sending {:?} to {}", third_parties, connection_node_id);
@@ -272,6 +279,8 @@ async fn send_third_parties(
 
     stream.write_all(&third_parties).await?;
 
+    log::info!("Sent third parties");
+
     Ok(())
 }
 
@@ -302,8 +311,10 @@ async fn handle_outgoing(connection: quinn::Connection, mut state: State) -> any
             };
 
             if let Err(error) = function().await {
-                println!("{}", error);
+                log::error!("{}", error);
             }
+
+            log::info!("Sent initial layers");
         }
     });
 
@@ -319,7 +330,6 @@ async fn handle_outgoing(connection: quinn::Connection, mut state: State) -> any
         let mut stream = connection.open_uni().await?;
         write_data_packet(&mut stream, index as u32, &layer).await?;
     }
-    Ok(())
 }
 
 async fn handle_incoming(
@@ -336,6 +346,8 @@ async fn handle_incoming(
         .await
         .root_layer
         .insert_sub_layer_path(remote_root_layer.get_identifier(), 0);
+
+    log::info!("Created initial root layer");
 
     loop {
         let mut stream = connection.accept_uni().await?;
@@ -367,7 +379,7 @@ async fn handle_incoming(
                     )?;
                 }
 
-                log::info!("Got {:?} bytes from {}", string, node_id);
+                //log::info!("Got {:?} bytes from {}", string, node_id);
             }
             PacketType::NewNode => {
                 let data = stream.read_to_end(1024 * 1024).await?;

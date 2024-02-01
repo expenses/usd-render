@@ -1,7 +1,6 @@
 use crate::networking::{self, NodeApprovalDirection, NodeApprovalResponse, NodeSharingPolicy};
 use bbl_usd::cpp;
 use iroh_net::{key::PublicKey, ticket::NodeTicket, NodeAddr};
-use std::collections::HashMap;
 use std::str::FromStr;
 use tokio::sync::oneshot;
 
@@ -123,7 +122,7 @@ pub fn draw_buttons(ui: &mut egui::Ui, networking_state: &networking::State) {
 pub fn draw_approval_queue(
     ui: &mut egui::Ui,
     state: &mut State,
-    approved_nodes: &HashMap<PublicKey, NodeSharingPolicy>,
+    approved_nodes: &scc::HashMap<PublicKey, NodeSharingPolicy>,
 ) {
     ui.heading("Approval Queue");
 
@@ -136,7 +135,7 @@ pub fn draw_approval_queue(
             let _ = sender
                 .take()
                 .unwrap()
-                .send(NodeApprovalResponse::Approved(node_sharing.clone()));
+                .send(NodeApprovalResponse::Approved(node_sharing.get().clone()));
             return false;
         }
 

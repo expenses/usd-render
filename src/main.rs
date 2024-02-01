@@ -270,7 +270,6 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
 
-            let approved_nodes_read = approved_nodes.read().await;
             let connection_infos = endpoint.connection_infos().await?;
             let log_lines = logging::get_lines().await;
 
@@ -284,7 +283,7 @@ async fn main() -> anyhow::Result<()> {
                 });
 
                 if !ui_state.approval_queue.is_empty() {
-                    ui::draw_approval_queue(ui, &mut ui_state, &approved_nodes_read);
+                    ui::draw_approval_queue(ui, &mut ui_state, &approved_nodes);
                 }
 
                 ui.collapsing("Log", |ui| {

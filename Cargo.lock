@@ -3373,6 +3373,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "scc"
+version = "2.0.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "903471e09ef1bf20830512faf69ef92970a3e7abeb88cfdc2f8ceea6f28f5c8d"
+
+[[package]]
 name = "schannel"
 version = "0.1.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4244,6 +4250,7 @@ dependencies = [
  "postcard",
  "quinn",
  "rfd",
+ "scc",
  "tokio",
 ]
 
