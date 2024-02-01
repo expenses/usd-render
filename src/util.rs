@@ -1,13 +1,3 @@
-pub fn compare_and_send<T: PartialEq>(sender: &mut tokio::sync::watch::Sender<T>, value: T) {
-    sender.send_if_modified(|current| {
-        if *current == value {
-            return false;
-        }
-        *current = value;
-        true
-    });
-}
-
 pub fn get_movement(window: &glfw::Window) -> glam::IVec3 {
     let mut movement = glam::IVec3::ZERO;
 

@@ -4,7 +4,7 @@ pub struct LocalLayers {
     root: sdf::LayerRefPtr,
     current_sublayer: sdf::LayerRefPtr,
     private: sdf::LayerRefPtr,
-    sublayer_index: u8,
+    sublayer_index: usize,
 }
 
 impl LocalLayers {
@@ -48,9 +48,11 @@ impl LocalLayers {
         self.sublayer_index += 1;
     }
 
-    pub fn export(&self) -> (u8, cpp::String) {
-        let state = self.current_sublayer.export_to_string().unwrap();
-        (self.sublayer_index, state)
+    pub fn export(&self) -> (usize, cpp::String) {
+        (
+            self.sublayer_index,
+            self.current_sublayer.export_to_string().unwrap(),
+        )
     }
 }
 

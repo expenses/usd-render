@@ -1,10 +1,9 @@
-use crate::{layers, UsdState, ALPN};
+use crate::{ipc, layers, UsdState, ALPN};
 use bbl_usd::cpp;
 use iroh_net::{key::PublicKey, magic_endpoint::accept_conn, AddrInfo, MagicEndpoint, NodeAddr};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{oneshot, watch};
-use tokio_stream::StreamExt;
 
 pub type ApprovedNodes = Arc<tokio::sync::RwLock<HashMap<PublicKey, NodeSharingPolicy>>>;
 pub type ConnectedNodes = Arc<tokio::sync::Mutex<HashSet<PublicKey>>>;
@@ -63,9 +62,8 @@ pub struct State {
     pub approved_nodes: ApprovedNodes,
     pub approval_queue: ApprovalQueue,
     pub connected_nodes: ConnectedNodes,
-    pub state: watch::Receiver<(u8, cpp::String)>,
+    pub state: watch::Receiver<ipc::PublicLayerState>,
     pub usd: Arc<tokio::sync::RwLock<UsdState>>,
-    pub exported_local_layers: Arc<tokio::sync::RwLock<Vec<cpp::String>>>,
 }
 
 pub async fn accept(connecting: quinn::Connecting, state: State) {
@@ -277,42 +275,49 @@ async fn send_third_parties(
     Ok(())
 }
 
-pub async fn update_exported_local_layers(state: State) {
-    let mut state_stream = tokio_stream::wrappers::WatchStream::from_changes(state.state);
-    while let Some((index, exported_layer)) = state_stream.next().await {
-        let index = index as usize;
-        let mut exported_local_layers = state.exported_local_layers.write().await;
-        while index >= exported_local_layers.len() {
-            exported_local_layers.push(cpp::String::new("#usda 1.0"));
-        }
-        exported_local_layers[index] = exported_layer;
-    }
-}
-
 async fn write_data_packet(
     stream: &mut quinn::SendStream,
-    index: u8,
+    index: u32,
     state: &cpp::String,
 ) -> anyhow::Result<()> {
-    stream.write_all(&[PacketType::Data as u8, index]).await?;
+    stream.write_all(&[PacketType::Data as u8]).await?;
+    stream.write_all(&index.to_le_bytes()).await?;
     stream.write_all(state.as_bytes()).await?;
     Ok(())
 }
 
-async fn handle_outgoing(connection: quinn::Connection, state: State) -> anyhow::Result<()> {
-    {
-        let mut stream = connection.open_uni().await?;
-        let existing_layers = state.exported_local_layers.read().await;
-        for (index, state) in existing_layers.iter().enumerate() {
-            println!("{}: {}", index, state.as_str());
-            write_data_packet(&mut stream, index as u8, state).await?;
-        }
-    }
+async fn handle_outgoing(connection: quinn::Connection, mut state: State) -> anyhow::Result<()> {
+    tokio::spawn({
+        let connection = connection.clone();
+        let layers = state.state.borrow().layers.clone();
+        async move {
+            let function = || async move {
+                for (index, layer) in layers.iter().enumerate() {
+                    println!("{}: {}", index, layer.as_str());
+                    let mut stream = connection.open_uni().await?;
+                    write_data_packet(&mut stream, index as u32, layer).await?;
+                }
 
-    let mut state_stream = tokio_stream::wrappers::WatchStream::from_changes(state.state);
-    while let Some((index, state)) = state_stream.next().await {
+                Ok::<_, anyhow::Error>(())
+            };
+
+            if let Err(error) = function().await {
+                println!("{}", error);
+            }
+        }
+    });
+
+    loop {
+        state.state.changed().await?;
+        let (layer, index) = {
+            let state = state.state.borrow();
+            (
+                state.layers[state.updated_layer].clone(),
+                state.updated_layer,
+            )
+        };
         let mut stream = connection.open_uni().await?;
-        write_data_packet(&mut stream, index, &state).await?;
+        write_data_packet(&mut stream, index as u32, &layer).await?;
     }
     Ok(())
 }
@@ -344,8 +349,9 @@ async fn handle_incoming(
         };
         match ty {
             PacketType::Data => {
-                let mut index = 0_u8;
-                stream.read_exact(std::slice::from_mut(&mut index)).await?;
+                let mut index = [0_u8; 4];
+                stream.read_exact(&mut index).await?;
+                let index = u32::from_le_bytes(index);
 
                 let data = stream.read_to_end(1024 * 1024).await?;
                 let string = std::str::from_utf8(&data)?;

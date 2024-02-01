@@ -1,4 +1,4 @@
-use bbl_usd::{cpp, sdf, usd, vt, tf};
+use bbl_usd::{cpp, sdf, tf, usd, vt};
 use clap::Parser;
 use dolly::prelude::*;
 use glfw::{Action, Context, Key};
@@ -7,6 +7,7 @@ use iroh_net::key::SecretKey;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+mod ipc;
 mod layers;
 mod logging;
 mod networking;
@@ -123,9 +124,10 @@ async fn main() -> anyhow::Result<()> {
             );
     }
 
-    let (mut state_tx, state_rx) = tokio::sync::watch::channel((0_u8, cpp::String::default()));
-
-    util::compare_and_send(&mut state_tx, local_layers.export());
+    let (mut state_tx, state_rx) = tokio::sync::watch::channel(ipc::PublicLayerState {
+        layers: vec![local_layers.export().1],
+        updated_layer: 0,
+    });
 
     local_layers.add_new_sublayer();
 
@@ -171,12 +173,7 @@ async fn main() -> anyhow::Result<()> {
         connected_nodes: connected_nodes.clone(),
         state: state_rx.clone(),
         usd: usd_state.clone(),
-        exported_local_layers: Default::default(),
     };
-
-    tokio::spawn(networking::update_exported_local_layers(
-        networking_state.clone(),
-    ));
 
     tokio::spawn({
         let networking_state = networking_state.clone();
@@ -322,7 +319,10 @@ async fn main() -> anyhow::Result<()> {
 
         let usd_state = usd_state.downgrade();
 
-        util::compare_and_send(&mut state_tx, local_layers.export());
+        {
+            let (index, serialized) = local_layers.export();
+            ipc::compare_and_send_existing_layer(&mut state_tx, serialized, index);
+        }
 
         // Rendering
         unsafe {
