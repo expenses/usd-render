@@ -22,3 +22,18 @@ pub fn view_from_camera_transform(
         transform.up().as_dvec3(),
     )
 }
+
+pub fn spawn_fallible<
+    F: std::future::Future<Output = anyhow::Result<()>> + Send + 'static,
+    H: FnOnce(anyhow::Error) -> HF + Send + 'static,
+    HF: std::future::Future<Output = ()> + Send,
+>(
+    future: F,
+    handler: H,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        if let Err(err) = future.await {
+            handler(err).await;
+        }
+    })
+}

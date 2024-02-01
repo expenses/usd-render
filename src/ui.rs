@@ -1,4 +1,5 @@
 use crate::networking::{self, NodeApprovalDirection, NodeApprovalResponse, NodeSharingPolicy};
+use crate::util::spawn_fallible;
 use bbl_usd::cpp;
 use iroh_net::{key::PublicKey, ticket::NodeTicket, NodeAddr};
 use std::str::FromStr;
@@ -98,24 +99,23 @@ pub fn draw_buttons(ui: &mut egui::Ui, networking_state: &networking::State) {
         });
     }
     if ui.button("save keyfile").clicked() {
-        tokio::spawn({
-            let endpoint = networking_state.endpoint.clone();
-            async move {
-                let function = || async move {
+        spawn_fallible(
+            {
+                let endpoint = networking_state.endpoint.clone();
+                async move {
                     let key = endpoint.secret_key();
                     let serialized = key.to_openssh()?;
                     // None if cancelled.
                     if let Some(filehandle) = rfd::AsyncFileDialog::new().save_file().await {
                         filehandle.write(serialized.as_bytes()).await?;
                     }
-                    Ok::<_, anyhow::Error>(())
-                };
-
-                if let Err(error) = function().await {
-                    log::error!("{}", error);
+                    Ok(())
                 }
-            }
-        });
+            },
+            |error| async move {
+                log::error!("{}", error);
+            },
+        );
     }
 }
 

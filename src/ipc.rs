@@ -4,6 +4,7 @@ use tokio::sync::watch;
 pub struct PublicLayerState {
     pub layers: Vec<cpp::String>,
     pub updated_layer: usize,
+    pub update_index: u32,
 }
 
 pub fn compare_and_send_existing_layer(
@@ -27,6 +28,7 @@ pub fn compare_and_send_existing_layer(
         }
 
         layers.updated_layer = index;
+        layers.update_index += 1;
         true
     });
 }

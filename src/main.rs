@@ -127,6 +127,7 @@ async fn main() -> anyhow::Result<()> {
     let (mut state_tx, state_rx) = tokio::sync::watch::channel(ipc::PublicLayerState {
         layers: vec![local_layers.export().1],
         updated_layer: 0,
+        update_index: 0,
     });
 
     local_layers.add_new_sublayer();

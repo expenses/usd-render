@@ -1,9 +1,9 @@
-use crate::{ipc, layers, UsdState, ALPN};
+use crate::{ipc, layers, util::spawn_fallible, UsdState, ALPN};
 use bbl_usd::cpp;
 use iroh_net::{key::PublicKey, magic_endpoint::accept_conn, AddrInfo, MagicEndpoint, NodeAddr};
 use std::collections::HashSet;
-use std::sync::Arc;
-use tokio::sync::{oneshot, watch};
+use std::sync::{atomic, Arc};
+use tokio::sync::{mpsc, oneshot, watch};
 
 pub type ApprovedNodes = Arc<scc::HashMap<PublicKey, NodeSharingPolicy>>;
 pub type ConnectedNodes = Arc<scc::HashSet<PublicKey>>;
@@ -32,7 +32,13 @@ impl NodeConnection {
 impl Drop for NodeConnection {
     fn drop(&mut self) {
         log::info!("Disconnecting from {}", self.node_id);
-        self.connected_nodes.remove(&self.node_id);
+        tokio::spawn({
+            let connected_nodes = self.connected_nodes.clone();
+            let node_id = self.node_id;
+            async move {
+                connected_nodes.remove_async(&node_id).await;
+            }
+        });
     }
 }
 
@@ -346,48 +352,72 @@ async fn send_third_parties(
 async fn write_data_packet(
     stream: &mut quinn::SendStream,
     index: u32,
+    update_index: u32,
     state: &cpp::String,
 ) -> anyhow::Result<()> {
     stream.write_all(&[PacketType::Data as u8]).await?;
     stream.write_all(&index.to_le_bytes()).await?;
+    stream.write_all(&update_index.to_le_bytes()).await?;
     stream.write_all(state.as_bytes()).await?;
     Ok(())
 }
 
 async fn handle_outgoing(connection: quinn::Connection, mut state: State) -> anyhow::Result<()> {
-    tokio::spawn({
-        let connection = connection.clone();
-        let layers = state.state.borrow().layers.clone();
-        async move {
-            let function = || async move {
+    spawn_fallible(
+        {
+            let connection = connection.clone();
+            let layers = state.state.borrow().layers.clone();
+            async move {
                 for (index, layer) in layers.iter().enumerate() {
                     println!("{}: {}", index, layer.as_str());
                     let mut stream = connection.open_uni().await?;
-                    write_data_packet(&mut stream, index as u32, layer).await?;
+                    stream.set_priority(i32::max_value().saturating_sub(index as i32))?;
+                    write_data_packet(&mut stream, index as u32, u32::max_value(), layer).await?;
                 }
 
-                Ok::<_, anyhow::Error>(())
-            };
+                log::info!("Sent initial layers");
 
-            if let Err(error) = function().await {
-                log::error!("{}", error);
+                Ok(())
             }
+        },
+        |error| async move {
+            log::error!("{}", error);
+        },
+    );
 
-            log::info!("Sent initial layers");
-        }
-    });
+    let (error_tx, mut error_rx) = mpsc::channel(1);
 
     loop {
+        match error_rx.try_recv() {
+            Ok(error) => return Err(error),
+            Err(error @ mpsc::error::TryRecvError::Disconnected) => {
+                return Err(anyhow::anyhow!("{}", error))
+            }
+            Err(mpsc::error::TryRecvError::Empty) => {}
+        }
+
         state.state.changed().await?;
-        let (layer, index) = {
+        let (layer, index, update_index) = {
             let state = state.state.borrow();
             (
                 state.layers[state.updated_layer].clone(),
                 state.updated_layer,
+                state.update_index,
             )
         };
-        let mut stream = connection.open_uni().await?;
-        write_data_packet(&mut stream, index as u32, &layer).await?;
+        let error_tx = error_tx.clone();
+        let connection = connection.clone();
+        spawn_fallible(
+            async move {
+                let mut stream = connection.open_uni().await?;
+                stream.set_priority(update_index as i32)?;
+                write_data_packet(&mut stream, index as u32, update_index as u32, &layer).await?;
+                Ok(())
+            },
+            |error| async move {
+                let _ = error_tx.send(error).await;
+            },
+        );
     }
 }
 
@@ -396,9 +426,10 @@ async fn handle_incoming(
     node_id: PublicKey,
     connection: quinn::Connection,
 ) -> anyhow::Result<()> {
-    let mut remote_sublayers = Vec::new();
+    let mut remote_sublayers = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+    let latest_update = Arc::new(atomic::AtomicU32::new(0));
 
-    let remote_root_layer = bbl_usd::sdf::Layer::create_anonymous(".usda");
+    let remote_root_layer = Arc::new(bbl_usd::sdf::Layer::create_anonymous(".usda"));
     state
         .usd
         .write()
@@ -410,49 +441,82 @@ async fn handle_incoming(
 
     loop {
         let mut stream = connection.accept_uni().await?;
-        let ty = {
-            let mut ty_byte = 0_u8;
-            stream
-                .read_exact(std::slice::from_mut(&mut ty_byte))
-                .await?;
-            PacketType::from_byte(ty_byte)
-                .ok_or_else(|| anyhow::anyhow!("Got invalid packet byte: {}", ty_byte))?
-        };
-        match ty {
-            PacketType::Data => {
-                let mut index = [0_u8; 4];
-                stream.read_exact(&mut index).await?;
-                let index = u32::from_le_bytes(index);
+        let remote_sublayers = remote_sublayers.clone();
+        let remote_root_layer = remote_root_layer.clone();
+        let state = state.clone();
+        let latest_update = latest_update.clone();
+        spawn_fallible(
+            async move {
+                let ty = {
+                    let mut ty_byte = 0_u8;
+                    stream
+                        .read_exact(std::slice::from_mut(&mut ty_byte))
+                        .await?;
+                    PacketType::from_byte(ty_byte)
+                        .ok_or_else(|| anyhow::anyhow!("Got invalid packet byte: {}", ty_byte))?
+                };
+                match ty {
+                    PacketType::Data => {
+                        let mut index = [0_u8; 4];
+                        stream.read_exact(&mut index).await?;
+                        let index = u32::from_le_bytes(index);
 
-                let data = stream.read_to_end(1024 * 1024).await?;
-                let string = std::str::from_utf8(&data)?;
-                let cpp_string = bbl_usd::cpp::String::new(string);
+                        let mut update_index = [0_u8; 4];
+                        stream.read_exact(&mut update_index).await?;
+                        let update_index = u32::from_le_bytes(update_index);
 
-                {
-                    let _lock = state.usd.write().await;
-                    layers::update_remote_sublayers(
-                        &remote_root_layer,
-                        &mut remote_sublayers,
-                        index as _,
-                        &cpp_string,
-                    )?;
-                }
+                        if update_index != u32::max_value() {
+                            let prev_latest =
+                                latest_update.fetch_max(update_index, atomic::Ordering::Relaxed);
+                            if prev_latest >= update_index {
+                                log::info!(
+                                    "prev_latest: {prev_latest}, update_index: {update_index}, skipping"
+                                );
+                                return Ok(());
+                            }
+                        }
 
-                //log::info!("Got {:?} bytes from {}", string, node_id);
-            }
-            PacketType::NewNode => {
-                let data = stream.read_to_end(1024 * 1024).await?;
-                let third_parties: Vec<NodeAddr> = postcard::from_bytes(&data)?;
-                for node_addr in third_parties.into_iter() {
-                    fn spawn_connect(state: State, node_addr: NodeAddr, referrer: PublicKey) {
-                        tokio::spawn(async move {
-                            connect(state, node_addr, Some(referrer)).await;
-                        });
+                        let data = stream.read_to_end(1024 * 1024).await?;
+                        let string = std::str::from_utf8(&data)?;
+                        let cpp_string = bbl_usd::cpp::String::new(string);
+
+                        {
+                            let _lock = state.usd.write().await;
+                            let mut remote_sublayers = remote_sublayers.lock().await;
+                            layers::update_remote_sublayers(
+                                &remote_root_layer,
+                                &mut remote_sublayers,
+                                index as _,
+                                &cpp_string,
+                            )?;
+                        }
+
+                        //log::info!("Got {:?} bytes from {}", string, node_id);
                     }
+                    PacketType::NewNode => {
+                        let data = stream.read_to_end(1024 * 1024).await?;
+                        let third_parties: Vec<NodeAddr> = postcard::from_bytes(&data)?;
+                        for node_addr in third_parties.into_iter() {
+                            fn spawn_connect(
+                                state: State,
+                                node_addr: NodeAddr,
+                                referrer: PublicKey,
+                            ) {
+                                tokio::spawn(async move {
+                                    connect(state, node_addr, Some(referrer)).await;
+                                });
+                            }
 
-                    spawn_connect(state.clone(), node_addr, node_id);
+                            spawn_connect(state.clone(), node_addr, node_id);
+                        }
+                    }
                 }
-            }
-        }
+
+                Ok(())
+            },
+            |error| async move {
+                log::error!("{}", error);
+            },
+        );
     }
 }
