@@ -102,48 +102,51 @@ async fn wait_for_approval(
     direction: NodeApprovalDirection,
     connection: Option<quinn::Connection>,
 ) -> bool {
-    if let scc::hash_map::Entry::Vacant(vacancy) = state.approved_nodes.entry_async(node_id).await {
-        let send_and_get_response = || async move {
-            let (tx, rx) = oneshot::channel();
+    let vacancy = match state.approved_nodes.entry_async(node_id).await {
+        Entry::Occupied(_) => return true,
+        Entry::Vacant(vacancy) => vacancy,
+    };
 
-            state
-                .approval_queue
-                .send(NodeApprovalRequest {
-                    node_id,
-                    direction,
-                    response_sender: tx,
-                })
-                .await?;
+    let send_and_get_response = || async move {
+        let (tx, rx) = oneshot::channel();
 
-            let response = rx.await?;
+        state
+            .approval_queue
+            .send(NodeApprovalRequest {
+                node_id,
+                direction,
+                response_sender: tx,
+            })
+            .await?;
 
-            Ok::<_, anyhow::Error>(response)
-        };
+        let response = rx.await?;
 
-        let response = match send_and_get_response().await {
-            Ok(response) => response,
-            Err(error) => {
-                if let Some(connection) = connection {
-                    connection.close(0_u32.into(), b"error");
-                }
-                log::error!("{}", error);
-                return false;
+        Ok::<_, anyhow::Error>(response)
+    };
+
+    let response = match send_and_get_response().await {
+        Ok(response) => response,
+        Err(error) => {
+            if let Some(connection) = connection {
+                connection.close(0_u32.into(), b"error");
             }
-        };
+            log::error!("{}", error);
+            return false;
+        }
+    };
 
-        let node_sharing = match response {
-            NodeApprovalResponse::Approved(node_sharing) => node_sharing,
-            NodeApprovalResponse::Denied => {
-                if let Some(connection) = connection {
-                    connection.close(0_u32.into(), b"denied");
-                }
-                log::info!("Denied connection to {}", node_id.fmt_short());
-                return false;
+    let node_sharing = match response {
+        NodeApprovalResponse::Approved(node_sharing) => node_sharing,
+        NodeApprovalResponse::Denied => {
+            if let Some(connection) = connection {
+                connection.close(0_u32.into(), b"denied");
             }
-        };
+            log::info!("Denied connection to {}", node_id.fmt_short());
+            return false;
+        }
+    };
 
-        vacancy.insert_entry(node_sharing);
-    }
+    vacancy.insert_entry(node_sharing);
 
     true
 }
@@ -203,61 +206,59 @@ async fn handle_connection(
     connection: quinn::Connection,
     connection_node_id: PublicKey,
 ) {
+    let mut existing_node_ids = Vec::new();
+
+    state
+        .connected_nodes
+        .scan_async(|existing_node_id| {
+            if existing_node_id == &connection_node_id {
+                return;
+            }
+            existing_node_ids.push(*existing_node_id);
+        })
+        .await;
+
     let mut third_parties = Vec::new();
 
-    {
-        let connected_nodes = &state.connected_nodes;
-        let mut existing_node_ids = Vec::new();
-
-        connected_nodes
-            .scan_async(|existing_node_id| {
-                if existing_node_id == &connection_node_id {
-                    return;
-                }
-                existing_node_ids.push(*existing_node_id);
-            })
-            .await;
-
-        for existing_node_id in existing_node_ids {
-            match state.approved_nodes.get_async(&existing_node_id).await {
-                Some(sharing_policy) => {
-                    if !sharing_policy.get().allows(connection_node_id) {
-                        log::info!("Not sharing {} to {}", existing_node_id, connection_node_id);
-                        continue;
-                    }
-                }
-                None => {
-                    log::error!("Node {} connected but not allowed.", existing_node_id);
+    for existing_node_id in existing_node_ids {
+        match state.approved_nodes.get_async(&existing_node_id).await {
+            Some(sharing_policy) => {
+                if !sharing_policy.get().allows(connection_node_id) {
+                    log::info!("Not sharing {} to {}", existing_node_id, connection_node_id);
+                    continue;
                 }
             }
-
-            let connection_info = match state.endpoint.connection_info(existing_node_id).await {
-                Err(error) => {
-                    log::error!(
-                        "Error getting connection info for {}: {}",
-                        existing_node_id,
-                        error
-                    );
-                    continue;
-                }
-                Ok(None) => {
-                    log::error!("No connection info for {} found.", existing_node_id);
-                    continue;
-                }
-                Ok(Some(info)) => info,
-            };
-
-            third_parties.push(NodeAddr {
-                node_id: existing_node_id,
-                info: AddrInfo {
-                    derp_url: connection_info.derp_url,
-                    direct_addresses: connection_info.addrs.iter().map(|addr| addr.addr).collect(),
-                },
-            });
+            None => {
+                log::error!("Node {} connected but not allowed.", existing_node_id);
+            }
         }
 
-        let _ = connected_nodes.insert_async(connection_node_id).await;
+        let connection_info = match state.endpoint.connection_info(existing_node_id).await {
+            Err(error) => {
+                log::error!(
+                    "Error getting connection info for {}: {}",
+                    existing_node_id,
+                    error
+                );
+                continue;
+            }
+            Ok(None) => {
+                log::error!("No connection info for {} found.", existing_node_id);
+                continue;
+            }
+            Ok(Some(info)) => info,
+        };
+
+        third_parties.push(NodeAddr {
+            node_id: existing_node_id,
+            info: AddrInfo {
+                derp_url: connection_info.derp_url,
+                direct_addresses: connection_info.addrs.iter().map(|addr| addr.addr).collect(),
+            },
+        });
     }
+
+    let _ = state.connected_nodes.insert_async(connection_node_id).await;
 
     log::info!("Sending {:?} to {}", third_parties, connection_node_id);
 
