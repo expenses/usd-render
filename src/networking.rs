@@ -1,6 +1,7 @@
 use crate::{ipc, layers, UsdState, ALPN};
 use bbl_usd::cpp;
 use iroh_net::{key::PublicKey, magic_endpoint::accept_conn, AddrInfo, MagicEndpoint, NodeAddr};
+use scc::hash_map::Entry;
 use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::{oneshot, watch};
@@ -75,90 +76,126 @@ pub async fn accept(connecting: quinn::Connecting, state: State) {
         }
     };
 
-    match wait_for_approval(state.clone(), node_id, NodeApprovalDirection::Incoming).await {
-        Ok(true) => {}
-        Err(error) => {
-            log::error!("{}", error);
-            connection.close(0_u32.into(), b"error");
-            return;
-        }
-        Ok(false) => {
-            log::info!("Denied connection to {}", node_id.fmt_short());
-            connection.close(0_u32.into(), b"denied");
-            return;
-        }
+    if state.connected_nodes.insert_async(node_id).await.is_err() {
+        log::info!("Ending new connection to {}: already connected", node_id);
+        connection.close(0_u32.into(), b"already connected");
+        return;
     }
 
-    handle_connection(state, connection, node_id).await;
+    if wait_for_approval(
+        state.clone(),
+        node_id,
+        NodeApprovalDirection::Incoming,
+        Some(connection.clone()),
+    )
+    .await
+    {
+        handle_connection(state.clone(), connection, node_id).await;
+    }
+
+    state.connected_nodes.remove_async(&node_id).await;
 }
 
 async fn wait_for_approval(
     state: State,
     node_id: PublicKey,
     direction: NodeApprovalDirection,
-) -> anyhow::Result<bool> {
-    if !state.approved_nodes.contains_async(&node_id).await {
-        let (tx, rx) = oneshot::channel();
-        state
-            .approval_queue
-            .send(NodeApprovalRequest {
-                node_id,
-                direction,
-                response_sender: tx,
-            })
-            .await?;
+    connection: Option<quinn::Connection>,
+) -> bool {
+    if let scc::hash_map::Entry::Vacant(vacancy) = state.approved_nodes.entry_async(node_id).await {
+        let send_and_get_response = || async move {
+            let (tx, rx) = oneshot::channel();
 
-        let node_sharing = match rx.await? {
-            NodeApprovalResponse::Approved(node_sharing) => node_sharing,
-            NodeApprovalResponse::Denied => return Ok(false),
+            state
+                .approval_queue
+                .send(NodeApprovalRequest {
+                    node_id,
+                    direction,
+                    response_sender: tx,
+                })
+                .await?;
+
+            let response = rx.await?;
+
+            Ok::<_, anyhow::Error>(response)
         };
 
-        let _ = state
-            .approved_nodes
-            .insert_async(node_id, node_sharing)
-            .await;
+        let response = match send_and_get_response().await {
+            Ok(response) => response,
+            Err(error) => {
+                if let Some(connection) = connection {
+                    connection.close(0_u32.into(), b"error");
+                }
+                log::error!("{}", error);
+                return false;
+            }
+        };
+
+        let node_sharing = match response {
+            NodeApprovalResponse::Approved(node_sharing) => node_sharing,
+            NodeApprovalResponse::Denied => {
+                if let Some(connection) = connection {
+                    connection.close(0_u32.into(), b"denied");
+                }
+                log::info!("Denied connection to {}", node_id.fmt_short());
+                return false;
+            }
+        };
+
+        vacancy.insert_entry(node_sharing);
     }
 
-    Ok(true)
+    true
 }
 
 pub async fn connect(state: State, addr: NodeAddr, referrer: Option<PublicKey>) {
-    if let Some(referrer) = referrer {
-        match wait_for_approval(
-            state.clone(),
-            addr.node_id,
-            NodeApprovalDirection::Outgoing { referrer },
-        )
-        .await
-        {
-            Ok(true) => {}
-            Err(error) => {
-                log::error!("{}", error);
-                return;
-            }
-            Ok(false) => {
-                log::info!("Denied connection to {}", addr.node_id.fmt_short());
-                return;
-            }
-        }
-    }
+    let node_id = addr.node_id;
 
-    if state.connected_nodes.contains_async(&addr.node_id).await {
-        log::warn!("Not connecting to {}: already connected", addr.node_id);
+    if state
+        .connected_nodes
+        .insert_async(addr.node_id)
+        .await
+        .is_err()
+    {
+        log::info!("Not connecting to {}: already connected", addr.node_id);
         return;
     }
 
-    let node_id = addr.node_id;
+    let inner = || {
+        let state = state.clone();
+        async move {
+            if let Some(referrer) = referrer {
+                if !wait_for_approval(
+                    state.clone(),
+                    addr.node_id,
+                    NodeApprovalDirection::Outgoing { referrer },
+                    None,
+                )
+                .await
+                {
+                    return;
+                }
+            } else {
+                let _ = state.approved_nodes.insert(
+                    addr.node_id,
+                    NodeSharingPolicy::AllExcept(Default::default()),
+                );
+            }
 
-    let connection = match state.endpoint.connect(addr, ALPN).await {
-        Ok(connection) => connection,
-        Err(error) => {
-            log::error!("Connecting to {} failed: {}", node_id, error);
-            return;
+            let connection = match state.endpoint.connect(addr, ALPN).await {
+                Ok(connection) => connection,
+                Err(error) => {
+                    log::error!("Connecting to {} failed: {}", node_id, error);
+                    return;
+                }
+            };
+
+            handle_connection(state, connection, node_id).await;
         }
     };
 
-    handle_connection(state, connection, node_id).await;
+    inner().await;
+    state.connected_nodes.remove_async(&node_id).await;
 }
 
 async fn handle_connection(
@@ -170,20 +207,13 @@ async fn handle_connection(
 
     {
         let connected_nodes = &state.connected_nodes;
-
-        if connected_nodes.contains_async(&connection_node_id).await {
-            log::info!(
-                "Ending new connection to {}: already connected",
-                connection_node_id
-            );
-            connection.close(0_u32.into(), b"already connected");
-            return;
-        }
-
         let mut existing_node_ids = Vec::new();
 
         connected_nodes
             .scan_async(|existing_node_id| {
+                if existing_node_id == &connection_node_id {
+                    return;
+                }
                 existing_node_ids.push(*existing_node_id);
             })
             .await;
@@ -261,6 +291,8 @@ async fn handle_connection(
     let _ = send_initial_third_parties.await;
     let _ = incoming.await;
     let _ = outgoing.await;
+
+    log::info!("Connection to {} ended", connection_node_id);
 }
 
 async fn send_third_parties(
