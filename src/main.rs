@@ -342,6 +342,8 @@ async fn main() -> anyhow::Result<()> {
         glfw_backend.window.swap_buffers();
     }
 
+    painter.destroy();
+
     endpoint.close(0_u32.into(), b"user closed").await?;
 
     Ok(())

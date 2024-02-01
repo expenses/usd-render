@@ -1,7 +1,6 @@
 use crate::{ipc, layers, UsdState, ALPN};
 use bbl_usd::cpp;
 use iroh_net::{key::PublicKey, magic_endpoint::accept_conn, AddrInfo, MagicEndpoint, NodeAddr};
-use scc::hash_map::Entry;
 use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::{oneshot, watch};
@@ -10,6 +9,7 @@ pub type ApprovedNodes = Arc<scc::HashMap<PublicKey, NodeSharingPolicy>>;
 pub type ConnectedNodes = Arc<scc::HashSet<PublicKey>>;
 pub type ApprovalQueue = tokio::sync::mpsc::Sender<NodeApprovalRequest>;
 
+// Adds a nodeid to the connected nodes set on creation, removes it on drop.
 pub struct NodeConnection {
     connected_nodes: ConnectedNodes,
     node_id: PublicKey,
@@ -181,7 +181,7 @@ async fn wait_for_approval(
         }
     };
 
-    state
+    let _ = state
         .approved_nodes
         .insert_async(node_id, node_sharing)
         .await;
@@ -257,6 +257,7 @@ async fn handle_connection(
             }
             None => {
                 log::error!("Node {} connected but not allowed.", existing_node_id);
+                continue;
             }
         }
 
@@ -318,7 +319,7 @@ async fn handle_connection(
     let _ = incoming.await;
     let _ = outgoing.await;
 
-    log::info!("Connection to {} ended", connection_node_id);
+    log::info!("Finished handling the connection to {}", connection_node_id);
 }
 
 async fn send_third_parties(
