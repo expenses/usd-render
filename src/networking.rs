@@ -239,8 +239,9 @@ async fn handle_connection(
     connection: quinn::Connection,
     connection_node_id: PublicKey,
 ) {
-    let mut existing_node_ids = Vec::new();
+    let mut existing_node_ids: Vec<PublicKey> = Vec::new();
 
+    /*
     state
         .connected_nodes
         .scan_async(|existing_node_id| {
@@ -302,6 +303,7 @@ async fn handle_connection(
             }
         }
     });
+    */
 
     let incoming = tokio::spawn({
         let connection = connection.clone();
@@ -321,7 +323,7 @@ async fn handle_connection(
         }
     });
 
-    let _ = send_initial_third_parties.await;
+    //let _ = send_initial_third_parties.await;
     let _ = incoming.await;
     let _ = outgoing.await;
 
