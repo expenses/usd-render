@@ -428,7 +428,7 @@ async fn handle_incoming(
     node_id: PublicKey,
     connection: quinn::Connection,
 ) -> anyhow::Result<()> {
-    let mut remote_sublayers = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+    let mut remote_sublayers = Arc::new(tokio::sync::Mutex::new(Vec::<bbl_usd::sdf::Layer>::new()));
     let latest_update = Arc::new(atomic::AtomicU32::new(0));
 
     let remote_root_layer = Arc::new(bbl_usd::sdf::Layer::create_anonymous(".usda"));
@@ -459,6 +459,7 @@ async fn handle_incoming(
                 };
                 match ty {
                     PacketType::Data => {
+                        /*
                         let mut index = [0_u8; 4];
                         stream.read_exact(&mut index).await?;
                         let index = u32::from_le_bytes(index);
@@ -494,6 +495,7 @@ async fn handle_incoming(
                         }
 
                         //log::info!("Got {:?} bytes from {}", string, node_id);
+                        */
                     }
                     PacketType::NewNode => {
                         let data = stream.read_to_end(1024 * 1024).await?;
