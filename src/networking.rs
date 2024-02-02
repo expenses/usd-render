@@ -459,7 +459,6 @@ async fn handle_incoming(
                 };
                 match ty {
                     PacketType::Data => {
-                        /*
                         let mut index = [0_u8; 4];
                         stream.read_exact(&mut index).await?;
                         let index = u32::from_le_bytes(index);
@@ -483,7 +482,7 @@ async fn handle_incoming(
                         let string = std::str::from_utf8(&data)?;
                         let cpp_string = bbl_usd::cpp::String::new(string);
 
-                        {
+                        /*{
                             let _lock = state.usd.write().await;
                             let mut remote_sublayers = remote_sublayers.lock().await;
                             layers::update_remote_sublayers(
@@ -492,10 +491,9 @@ async fn handle_incoming(
                                 index as _,
                                 &cpp_string,
                             )?;
-                        }
+                        }*/
 
-                        //log::info!("Got {:?} bytes from {}", string, node_id);
-                        */
+                        log::info!("Got {:?} bytes from {}", string, node_id);
                     }
                     PacketType::NewNode => {
                         let data = stream.read_to_end(1024 * 1024).await?;
