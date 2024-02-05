@@ -305,6 +305,7 @@ checksum = "8c3c1a368f70d6cf7302d78f8f7093da241fb8e8807c05cc9e51a125895a6d5b"
 [[package]]
 name = "bbl-build"
 version = "0.2.0"
+source = "git+https://github.com/anderslanglands/bbl-build-rs#fd2a2d18a6b9290c761a7a470bafdc8e6348bd4f"
 dependencies = [
  "regex",
 ]
@@ -312,6 +313,7 @@ dependencies = [
 [[package]]
 name = "bbl-usd"
 version = "0.1.0"
+source = "git+https://github.com/expenses/bbl-usd-rs?branch=imaging-plus-resolver#23b735db64616003f44f7e3d26b19604b5d91867"
 dependencies = [
  "bbl-build",
  "bindgen",
