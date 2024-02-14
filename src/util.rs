@@ -1,14 +1,24 @@
-pub fn get_movement(window: &glfw::Window) -> glam::IVec3 {
+#[derive(Default)]
+pub struct KeyboardState {
+    pub w: bool,
+    pub a: bool,
+    pub s: bool,
+    pub d: bool,
+    pub q: bool,
+    pub z: bool,
+}
+
+pub fn get_movement(state: &KeyboardState) -> glam::IVec3 {
     let mut movement = glam::IVec3::ZERO;
 
-    movement.x += (window.get_key(glfw::Key::D) != glfw::Action::Release) as i32;
-    movement.x -= (window.get_key(glfw::Key::A) != glfw::Action::Release) as i32;
+    movement.x += state.d as i32;
+    movement.x -= state.a as i32;
 
-    movement.y += (window.get_key(glfw::Key::W) != glfw::Action::Release) as i32;
-    movement.y -= (window.get_key(glfw::Key::S) != glfw::Action::Release) as i32;
+    movement.y += state.w as i32;
+    movement.y -= state.s as i32;
 
-    movement.z += (window.get_key(glfw::Key::Q) != glfw::Action::Release) as i32;
-    movement.z -= (window.get_key(glfw::Key::Z) != glfw::Action::Release) as i32;
+    movement.z += state.q as i32;
+    movement.z -= state.z as i32;
 
     movement
 }

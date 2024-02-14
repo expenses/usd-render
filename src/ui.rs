@@ -41,13 +41,13 @@ pub fn draw_node_info(
     ui: &mut egui::Ui,
     addr: &NodeAddr,
     ticket: &NodeTicket,
-    window: &mut glfw::Window,
+    //window: &mut glfw::Window,
 ) {
     ui.label(format!("Node ID: {}", addr.node_id.fmt_short()));
     ui.label("Node Ticket (click to copy):");
     let node_ticket_str = ticket.to_string();
     if ui.button(&node_ticket_str).clicked() {
-        window.set_clipboard_string(&node_ticket_str);
+        //window.set_clipboard_string(&node_ticket_str);
     }
 }
 
@@ -98,7 +98,7 @@ pub fn draw_buttons(ui: &mut egui::Ui, networking_state: &networking::State) {
             }
         });
     }
-    if ui.button("save keyfile").clicked() {
+    /*if ui.button("save keyfile").clicked() {
         spawn_fallible(
             {
                 let endpoint = networking_state.endpoint.clone();
@@ -116,7 +116,7 @@ pub fn draw_buttons(ui: &mut egui::Ui, networking_state: &networking::State) {
                 log::error!("{}", error);
             },
         );
-    }
+    }*/
 }
 
 pub fn draw_approval_queue(

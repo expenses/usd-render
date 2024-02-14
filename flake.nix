@@ -57,6 +57,7 @@
         
         devShells.default = with pkgs; mkShell rec {
           LIBCLANG_PATH = "${clang.cc.lib}/lib";
+          VULKAN_SDK = "${args.vulkan-sdk}/x86_64";
 
           packages = [
             args.babble args.openusd-minimal rustup pkg-config cmake ninja gcc clang gtk3

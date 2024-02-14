@@ -2,11 +2,10 @@ use ash::vk::{self, Handle as _};
 use bbl_usd::{cpp, sdf, tf, usd, vt};
 use clap::Parser;
 use dolly::prelude::*;
-use glfw::{Action, Context, Key};
-use glow::HasContext;
 use iroh_net::key::SecretKey;
 use std::path::PathBuf;
 use std::sync::Arc;
+use winit::event::VirtualKeyCode;
 
 mod ipc;
 mod layers;
@@ -34,7 +33,7 @@ struct Args {
     #[arg(long)]
     peers_data: Option<PathBuf>,
 }
-/*
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let mut args = Args::parse();
@@ -60,27 +59,88 @@ async fn main() -> anyhow::Result<()> {
 
     let endpoint = endpoint_builder.bind(0).await?;
 
-    let mut glfw_backend =
-        egui_window_glfw_passthrough::GlfwBackend::new(egui_window_glfw_passthrough::GlfwConfig {
-            ..Default::default()
-        });
+    let event_loop = EventLoop::new();
+    let window = WindowBuilder::new()
+        .with_title("Ash - Example")
+        .build(&event_loop)
+        .unwrap();
 
-    glfw_backend.window.make_current();
-    glfw_backend.window.set_key_polling(true);
+    let mut args = Args::parse();
 
-    let gl = unsafe {
-        glow::Context::from_loader_function(|s| glfw_backend.window.get_proc_address(s) as *const _)
-    };
+    let hgi_vulkan = usd::HgiVulkan::new();
 
-    #[allow(clippy::arc_with_non_send_sync)]
-    let gl = Arc::new(gl);
+    let vulkan = unsafe { setup_vulkan(&hgi_vulkan) }?;
 
-    let egui = egui::Context::default();
+    let surface = unsafe {
+        ash_window::create_surface(
+            &vulkan.entry,
+            &vulkan.instance,
+            window.raw_display_handle(),
+            window.raw_window_handle(),
+            None,
+        )
+    }?;
 
-    let mut painter = egui_glow::painter::Painter::new(gl.clone(), "", None)?;
+    let surface_loader = ash::extensions::khr::Surface::new(&vulkan.entry, &vulkan.instance);
 
-    let engine = usd::GLEngine::new();
-    engine.set_renderer_aov(&tf::Token::new("color"));
+    let surface_format = unsafe {
+        surface_loader.get_physical_device_surface_formats(vulkan.physical_device, surface)
+    }?[0];
+
+    let surface_capabilities = unsafe {
+        surface_loader.get_physical_device_surface_capabilities(vulkan.physical_device, surface)
+    }?;
+
+    let swapchain_loader = ash::extensions::khr::Swapchain::new(&vulkan.instance, &vulkan.device);
+
+    let initial_size = window.inner_size();
+
+    let mut swapchain_create_info = vk::SwapchainCreateInfoKHR::builder()
+        .surface(surface)
+        .min_image_count(3)
+        .image_color_space(surface_format.color_space)
+        .image_format(surface_format.format)
+        .image_extent(vk::Extent2D {
+            width: initial_size.width as _,
+            height: initial_size.height as _,
+        })
+        .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT)
+        .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
+        .pre_transform(vk::SurfaceTransformFlagsKHR::IDENTITY)
+        .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
+        .present_mode(vk::PresentModeKHR::FIFO)
+        .clipped(true)
+        .image_array_layers(1);
+
+    let mut swapchain = unsafe { Swapchain::new(&swapchain_create_info, &swapchain_loader) }?;
+
+    let mut egui_integration = egui_winit_ash_integration::Integration::new(
+        &window,
+        initial_size.width as _,
+        initial_size.height as _,
+        1.0,
+        Default::default(),
+        Default::default(),
+        vulkan.device.clone(),
+        Arc::new(std::sync::Mutex::new(
+            gpu_allocator::vulkan::Allocator::new(&gpu_allocator::vulkan::AllocatorCreateDesc {
+                instance: vulkan.instance.clone(),
+                device: vulkan.device.clone(),
+                physical_device: vulkan.physical_device.clone(),
+                debug_settings: Default::default(),
+                buffer_device_address: false,
+                allocation_sizes: Default::default(),
+            })?,
+        )),
+        0,
+        vulkan.queue.clone(),
+        swapchain_loader.clone(),
+        swapchain.swapchain.clone(),
+        surface_format,
+    );
+
+    let engine = usd::GLEngine::new(&hgi_vulkan);
+    engine.set_enable_presentation(false);
 
     let stage = usd::Stage::create_in_memory();
     // Root layer that holds all other layers.
@@ -150,20 +210,19 @@ async fn main() -> anyhow::Result<()> {
         .with(Smooth::new_position_rotation(1.0, 0.1))
         .build();
 
-    unsafe {
-        gl.clear_color(0.1, 0.2, 0.3, 1.0);
-    }
-
     let params = usd::GLRenderParams::new();
     params.set_cull_style(bbl_usd::ffi::usdImaging_GLCullStyle_usdImaging_GLCullStyle_CULL_STYLE_BACK_UNLESS_DOUBLE_SIDED);
-    params.set_color_correction_mode(&tf::Token::new("sRGB"));
     params.set_enable_lighting(false);
 
-    let mut size = glfw_backend.window.get_size();
-    engine.set_render_viewport(glam::DVec4::new(0.0, 0.0, size.0 as _, size.1 as _));
+    engine.set_render_viewport(glam::DVec4::new(
+        0.0,
+        0.0,
+        initial_size.width as _,
+        initial_size.height as _,
+    ));
+    engine.set_renderer_aov(&tf::Token::new("color"));
 
     let mut grab_toggled = false;
-    let mut prev_cursor_pos = glam::DVec2::from(glfw_backend.window.get_cursor_pos());
 
     let proj = glam::DMat4::perspective_rh_gl(59.0_f64.to_radians(), 1.0, 0.01, 1000.0);
 
@@ -193,169 +252,288 @@ async fn main() -> anyhow::Result<()> {
 
     let mut ui_state = ui::State::default();
 
-    while !glfw_backend.window.should_close() {
-        glfw_backend.glfw.poll_events();
-        glfw_backend.tick();
+    let mut keyboard_state = util::KeyboardState::default();
 
-        egui.begin_frame(glfw_backend.take_raw_input());
+    let _ = event_loop.run(move |event, _target, control_flow| {
+        let result = tokio::task::block_in_place(|| {
+            let handle = tokio::runtime::Handle::current();
 
-        // Handle key presses
-        if !egui.wants_keyboard_input() {
-            for event in glfw_backend.frame_events.iter() {
+            handle.block_on(async {
                 match event {
-                    glfw::WindowEvent::Key(Key::Escape, _, Action::Press, _) => {
-                        glfw_backend.window.set_should_close(true)
-                    }
-                    glfw::WindowEvent::Key(Key::G, _, Action::Press, _) => {
-                        grab_toggled = !grab_toggled;
-                        if grab_toggled {
-                            glfw_backend
-                                .window
-                                .set_cursor_mode(glfw::CursorMode::Disabled);
-                        } else {
-                            glfw_backend
-                                .window
-                                .set_cursor_mode(glfw::CursorMode::Normal);
+                    Event::WindowEvent { event, .. } => {
+                        let _ = egui_integration.handle_event(&event);
+
+                        match event {
+                            WindowEvent::CloseRequested => {
+                                *control_flow = ControlFlow::Exit;
+                            }
+                            WindowEvent::KeyboardInput {
+                                input:
+                                    winit::event::KeyboardInput {
+                                        state,
+                                        virtual_keycode: Some(key),
+                                        ..
+                                    },
+                                ..
+                            } => {
+                                let pressed = state == winit::event::ElementState::Pressed;
+
+                                match key {
+                                    VirtualKeyCode::W => keyboard_state.w = pressed,
+                                    VirtualKeyCode::A => keyboard_state.a = pressed,
+                                    VirtualKeyCode::S => keyboard_state.s = pressed,
+                                    VirtualKeyCode::D => keyboard_state.d = pressed,
+                                    VirtualKeyCode::Q => keyboard_state.q = pressed,
+                                    VirtualKeyCode::Z => keyboard_state.z = pressed,
+                                    VirtualKeyCode::G if pressed => {
+                                        grab_toggled = !grab_toggled;
+                                        if grab_toggled {
+                                            if window
+                                                .set_cursor_grab(
+                                                    winit::window::CursorGrabMode::Locked,
+                                                )
+                                                .is_err()
+                                            {
+                                                window.set_cursor_grab(
+                                                    winit::window::CursorGrabMode::Confined,
+                                                )?;
+                                            }
+                                            window.set_cursor_visible(false);
+                                        } else {
+                                            window.set_cursor_grab(
+                                                winit::window::CursorGrabMode::None,
+                                            )?;
+                                            window.set_cursor_visible(true);
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            WindowEvent::Resized(new_size) => {
+                                swapchain_create_info.image_extent = vk::Extent2D {
+                                    width: new_size.width as _,
+                                    height: new_size.height as _,
+                                };
+                                swapchain = unsafe {
+                                    Swapchain::new(&swapchain_create_info, &swapchain_loader)
+                                }?;
+                                engine.set_render_viewport(glam::DVec4::new(
+                                    0.0,
+                                    0.0,
+                                    new_size.width as _,
+                                    new_size.height as _,
+                                ));
+                                egui_integration.update_swapchain(
+                                    new_size.width as _,
+                                    new_size.height as _,
+                                    swapchain.swapchain,
+                                    surface_format,
+                                );
+                            }
+
+                            _ => {}
                         }
                     }
+                    Event::DeviceEvent {
+                        event: winit::event::DeviceEvent::MouseMotion { delta },
+                        ..
+                    } => {
+                        let delta = glam::DVec2::from(delta);
+
+                        if grab_toggled {
+                            let yaw_pitch = -delta * 0.1;
+                            camera
+                                .driver_mut::<YawPitch>()
+                                .rotate_yaw_pitch(yaw_pitch.x as _, yaw_pitch.y as _);
+                        }
+                    }
+                    Event::MainEventsCleared => {
+                        window.request_redraw();
+                    }
+                    Event::RedrawRequested(_) => unsafe {
+                        vulkan
+                            .device
+                            .wait_for_fences(&[vulkan.render_fence], true, u64::MAX)?;
+
+                        vulkan.device.reset_fences(&[vulkan.render_fence])?;
+
+                        vulkan.device.reset_command_pool(
+                            vulkan.command_pool,
+                            vk::CommandPoolResetFlags::empty(),
+                        )?;
+
+                        let swapchain_image_index = match swapchain_loader.acquire_next_image(
+                            swapchain.swapchain,
+                            u64::MAX,
+                            vulkan.present_semaphore,
+                            vk::Fence::null(),
+                        ) {
+                            Ok((swapchain_image_index, _suboptimal)) => swapchain_image_index,
+                            Err(error) => {
+                                log::warn!("Next frame error: {:?}", error);
+                                return Ok(());
+                            }
+                        };
+
+                        let swapchain_image = swapchain.images[swapchain_image_index as usize];
+
+                        // Egui
+
+                        egui_integration.begin_frame(&window);
+
+                        {
+                            while !ui_state.approval_queue.is_full() {
+                                if let Ok(request) = approval_rx.try_recv() {
+                                    ui_state.approval_queue.push((
+                                        request.node_id,
+                                        request.direction,
+                                        Some(request.response_sender),
+                                    ));
+                                } else {
+                                    break;
+                                }
+                            }
+
+                            let connection_infos = endpoint.connection_infos().await?;
+                            let log_lines = logging::get_lines().await;
+
+                            egui::Window::new("Network").show(&egui_integration.context(), |ui| {
+                                ui::draw_node_info(ui, &addr, &ticket);
+
+                                ui::draw_connect_to_node(
+                                    ui,
+                                    &networking_state,
+                                    &addr,
+                                    &mut ui_state,
+                                );
+
+                                ui.collapsing("Connections", |ui| {
+                                    ui::draw_connection_grid(ui, &connection_infos);
+                                });
+
+                                if !ui_state.approval_queue.is_empty() {
+                                    ui::draw_approval_queue(ui, &mut ui_state, &approved_nodes);
+                                }
+
+                                ui.collapsing("Log", |ui| {
+                                    log_lines.draw(ui);
+                                });
+
+                                ui::draw_buttons(ui, &networking_state);
+                            });
+                        }
+
+                        let output = egui_integration.end_frame(&window);
+
+                        let meshes = egui_integration.context().tessellate(output.shapes);
+
+                        // Update usd camera state
+
+                        let movement = if egui_integration.context().wants_keyboard_input() {
+                            glam::IVec3::ZERO
+                        } else {
+                            util::get_movement(&keyboard_state)
+                        }
+                        .as_vec3()
+                            * 0.1;
+
+                        let movement = movement.x * camera.final_transform.right()
+                            + movement.y * camera.final_transform.forward()
+                            + movement.z * glam::Vec3::Y;
+
+                        camera.driver_mut::<Position>().translate(movement);
+
+                        let transform = camera.update(1.0 / 60.0);
+
+                        engine.set_camera_state(util::view_from_camera_transform(transform), proj);
+
+                        let usd_state = usd_state.write().await;
+
+                        position_xform_op.set(
+                            &vt::Value::from_dvec3(transform.position.as_dvec3()),
+                            Default::default(),
+                        );
+                        rotation_xform_op.set(
+                            &vt::Value::from_dquat(
+                                transform.rotation.as_f64()
+                                    * glam::DQuat::from_rotation_y(180_f64.to_radians()),
+                            ),
+                            Default::default(),
+                        );
+
+                        let usd_state = usd_state.downgrade();
+
+                        {
+                            let (index, serialized) = local_layers.export();
+                            ipc::compare_and_send_existing_layer(&mut state_tx, serialized, index);
+                        }
+
+                        engine.render(&usd_state.pseudo_root, &params);
+
+                        let texture = engine.get_aov_texture(&tf::Token::new("color"));
+                        assert_ne!(texture.ptr, std::ptr::null_mut());
+                        let vulkan_texture = texture.get_vulkan_texture();
+                        let color_image = vk::Image::from_raw(vulkan_texture.get_image());
+
+                        vulkan.device.begin_command_buffer(
+                            vulkan.command_buffer,
+                            &vk::CommandBufferBeginInfo::builder()
+                                .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+                        )?;
+
+                        blit_image(
+                            &vulkan,
+                            color_image,
+                            swapchain_image,
+                            swapchain_create_info.image_extent,
+                        );
+
+                        egui_integration.paint(
+                            vulkan.command_buffer,
+                            swapchain_image_index as _,
+                            meshes,
+                            output.textures_delta,
+                        );
+
+                        vulkan.device.end_command_buffer(vulkan.command_buffer)?;
+
+                        vulkan.device.queue_submit(
+                            vulkan.queue,
+                            &[*vk::SubmitInfo::builder()
+                                .wait_semaphores(&[vulkan.present_semaphore])
+                                .wait_dst_stage_mask(&[vk::PipelineStageFlags::TRANSFER])
+                                .command_buffers(&[vulkan.command_buffer])
+                                .signal_semaphores(&[vulkan.render_semaphore])],
+                            vulkan.render_fence,
+                        )?;
+
+                        swapchain_loader.queue_present(
+                            vulkan.queue,
+                            &vk::PresentInfoKHR::builder()
+                                .wait_semaphores(&[vulkan.render_semaphore])
+                                .swapchains(&[swapchain.swapchain])
+                                .image_indices(&[swapchain_image_index]),
+                        )?;
+                    },
                     _ => {}
                 }
-            }
+
+                Ok::<_, anyhow::Error>(())
+            })
+        });
+
+        if let Err(loop_closure) = result {
+            log::error!("Error: {}", loop_closure);
         }
-
-        // Handle resizing
-        let current_size = glfw_backend.window.get_framebuffer_size();
-        if current_size != size {
-            size = current_size;
-            engine.set_render_viewport(glam::DVec4::new(0.0, 0.0, size.0 as _, size.1 as _));
-        }
-
-        // Get mouse delta
-        let cursor_pos = glam::DVec2::from(glfw_backend.window.get_cursor_pos());
-        let delta = cursor_pos - prev_cursor_pos;
-        prev_cursor_pos = cursor_pos;
-
-        // Camera movement and rotation
-
-        let movement = if egui.wants_keyboard_input() {
-            glam::IVec3::ZERO
-        } else {
-            util::get_movement(&glfw_backend.window)
-        }
-        .as_vec3()
-            * 0.1;
-
-        let movement = movement.x * camera.final_transform.right()
-            + movement.y * camera.final_transform.forward()
-            + movement.z * glam::Vec3::Y;
-
-        camera.driver_mut::<Position>().translate(movement);
-
-        if grab_toggled {
-            let yaw_pitch = -delta * 0.25;
-            camera
-                .driver_mut::<YawPitch>()
-                .rotate_yaw_pitch(yaw_pitch.x as _, yaw_pitch.y as _);
-        }
-
-        // Egui
-
-        {
-            while !ui_state.approval_queue.is_full() {
-                if let Ok(request) = approval_rx.try_recv() {
-                    ui_state.approval_queue.push((
-                        request.node_id,
-                        request.direction,
-                        Some(request.response_sender),
-                    ));
-                } else {
-                    break;
-                }
-            }
-
-            let connection_infos = endpoint.connection_infos().await?;
-            let log_lines = logging::get_lines().await;
-
-            egui::Window::new("Network").show(&egui, |ui| {
-                ui::draw_node_info(ui, &addr, &ticket, &mut glfw_backend.window);
-
-                ui::draw_connect_to_node(ui, &networking_state, &addr, &mut ui_state);
-
-                ui.collapsing("Connections", |ui| {
-                    ui::draw_connection_grid(ui, &connection_infos);
-                });
-
-                if !ui_state.approval_queue.is_empty() {
-                    ui::draw_approval_queue(ui, &mut ui_state, &approved_nodes);
-                }
-
-                ui.collapsing("Log", |ui| {
-                    log_lines.draw(ui);
-                });
-
-                ui::draw_buttons(ui, &networking_state);
-            });
-        }
-
-        let output = egui.end_frame();
-        let meshes = egui.tessellate(output.shapes, output.pixels_per_point);
-
-        // Update usd camera state
-
-        let transform = camera.update(1.0 / 60.0);
-
-        engine.set_camera_state(util::view_from_camera_transform(transform), proj);
-
-        let usd_state = usd_state.write().await;
-
-        position_xform_op.set(
-            &vt::Value::from_dvec3(transform.position.as_dvec3()),
-            Default::default(),
-        );
-        rotation_xform_op.set(
-            &vt::Value::from_dquat(
-                transform.rotation.as_f64() * glam::DQuat::from_rotation_y(180_f64.to_radians()),
-            ),
-            Default::default(),
-        );
-
-        let usd_state = usd_state.downgrade();
-
-        {
-            let (index, serialized) = local_layers.export();
-            ipc::compare_and_send_existing_layer(&mut state_tx, serialized, index);
-        }
-
-        // Rendering
-        unsafe {
-            gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
-        }
-
-        engine.render(&usd_state.pseudo_root, &params);
-
-        drop(usd_state);
-
-        painter.paint_and_update_textures(
-            [size.0 as u32, size.1 as u32],
-            output.pixels_per_point,
-            &meshes,
-            &output.textures_delta,
-        );
-
-        glfw_backend.window.swap_buffers();
-    }
-
-    painter.destroy();
+    });
 
     endpoint.close(0_u32.into(), b"user closed").await?;
-
     Ok(())
 }
-*/
 
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
 use winit::{
-    event::{ElementState, Event, WindowEvent},
+    event::{Event, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
     window::WindowBuilder,
 };
@@ -436,205 +614,6 @@ unsafe fn setup_vulkan(hgi: &usd::HgiVulkan) -> anyhow::Result<Vulkan> {
         present_semaphore,
         command_pool,
     })
-}
-
-fn main() -> anyhow::Result<()> {
-    let event_loop = EventLoop::new().unwrap();
-    let window = WindowBuilder::new()
-        .with_title("Ash - Example")
-        .build(&event_loop)
-        .unwrap();
-
-    let mut args = Args::parse();
-
-    let hgi_vulkan = usd::HgiVulkan::new();
-
-    unsafe {
-        let vulkan = setup_vulkan(&hgi_vulkan)?;
-
-        let surface = ash_window::create_surface(
-            &vulkan.entry,
-            &vulkan.instance,
-            window.raw_display_handle(),
-            window.raw_window_handle(),
-            None,
-        )
-        .unwrap();
-
-        let surface_loader = ash::extensions::khr::Surface::new(&vulkan.entry, &vulkan.instance);
-
-        let surface_format = surface_loader
-            .get_physical_device_surface_formats(vulkan.physical_device, surface)
-            .unwrap()[0];
-
-        let surface_capabilities = surface_loader
-            .get_physical_device_surface_capabilities(vulkan.physical_device, surface)
-            .unwrap();
-
-        let swapchain_loader =
-            ash::extensions::khr::Swapchain::new(&vulkan.instance, &vulkan.device);
-
-        let mut swapchain_create_info = vk::SwapchainCreateInfoKHR::builder()
-            .surface(surface)
-            .min_image_count(3)
-            .image_color_space(surface_format.color_space)
-            .image_format(surface_format.format)
-            .image_extent(vk::Extent2D {
-                width: 512,
-                height: 512,
-            })
-            .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT)
-            .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
-            .pre_transform(vk::SurfaceTransformFlagsKHR::IDENTITY)
-            .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
-            .present_mode(vk::PresentModeKHR::FIFO)
-            .clipped(true)
-            .image_array_layers(1);
-
-        let mut swapchain = Swapchain::new(&swapchain_create_info, &swapchain_loader)?;
-
-        let engine = usd::GLEngine::new(&hgi_vulkan);
-        engine.set_enable_presentation(false);
-        //engine.set_renderer_aov(&tf::Token::new("color"));
-
-        let mut camera: CameraRig = CameraRig::builder()
-            .with(Position::new(glam::Vec3::splat(2.0)))
-            .with(YawPitch {
-                yaw_degrees: 45.0,
-                pitch_degrees: -45.0,
-            })
-            .with(Smooth::new_position_rotation(1.0, 0.1))
-            .build();
-
-        let stage = usd::Stage::create_in_memory();
-        // Root layer that holds all other layers.
-        let root_layer = stage.get_root_layer();
-
-        let base_layer = sdf::Layer::find_or_open(&args.base);
-
-        root_layer.insert_sub_layer_path(base_layer.get_identifier(), 0);
-
-        let prim = stage.pseudo_root();
-        let params = usd::GLRenderParams::new();
-        params.set_cull_style(bbl_usd::ffi::usdImaging_GLCullStyle_usdImaging_GLCullStyle_CULL_STYLE_BACK_UNLESS_DOUBLE_SIDED);
-        params.set_enable_lighting(false);
-
-        let proj = glam::DMat4::perspective_rh_gl(59.0_f64.to_radians(), 1.0, 0.01, 1000.0);
-        engine.set_renderer_aov(&tf::Token::new("color"));
-
-        let transform = camera.update(1.0 / 60.0);
-
-        let _ = event_loop.run(move |event, elwt| {
-            let loop_closure = || -> anyhow::Result<()> {
-                match event {
-                    Event::WindowEvent { event, .. } => match event {
-                        WindowEvent::CloseRequested => {
-                            elwt.exit();
-                        }
-
-                        WindowEvent::Resized(new_size) => {
-                            swapchain_create_info.image_extent = vk::Extent2D {
-                                width: new_size.width as _,
-                                height: new_size.height as _,
-                            };
-                            swapchain = Swapchain::new(&swapchain_create_info, &swapchain_loader)?;
-                            engine.set_render_viewport(glam::DVec4::new(
-                                0.0,
-                                0.0,
-                                new_size.width as _,
-                                new_size.height as _,
-                            ));
-                        }
-                        WindowEvent::RedrawRequested => unsafe {
-                            vulkan.device.wait_for_fences(
-                                &[vulkan.render_fence],
-                                true,
-                                u64::MAX,
-                            )?;
-
-                            vulkan.device.reset_fences(&[vulkan.render_fence])?;
-
-                            vulkan.device.reset_command_pool(
-                                vulkan.command_pool,
-                                vk::CommandPoolResetFlags::empty(),
-                            )?;
-
-                            let swapchain_image_index = match swapchain_loader.acquire_next_image(
-                                swapchain.swapchain,
-                                u64::MAX,
-                                vulkan.present_semaphore,
-                                vk::Fence::null(),
-                            ) {
-                                Ok((swapchain_image_index, _suboptimal)) => swapchain_image_index,
-                                Err(error) => {
-                                    log::warn!("Next frame error: {:?}", error);
-                                    return Ok(());
-                                }
-                            };
-
-                            let swapchain_image = swapchain.images[swapchain_image_index as usize];
-
-                            engine.set_camera_state(
-                                util::view_from_camera_transform(transform),
-                                proj,
-                            );
-                            engine.render(&prim, &params);
-
-                            let texture = engine.get_aov_texture(&tf::Token::new("color"));
-                            assert_ne!(texture.ptr, std::ptr::null_mut());
-                            let mut vulkan_texture = texture.get_vulkan_texture();
-                            let color_image = vk::Image::from_raw(vulkan_texture.get_image());
-
-                            vulkan.device.begin_command_buffer(
-                                vulkan.command_buffer,
-                                &vk::CommandBufferBeginInfo::builder()
-                                    .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
-                            )?;
-
-                            blit_image(
-                                &vulkan,
-                                color_image,
-                                swapchain_image,
-                                swapchain_create_info.image_extent,
-                            );
-
-                            vulkan.device.end_command_buffer(vulkan.command_buffer)?;
-
-                            vulkan.device.queue_submit(
-                                vulkan.queue,
-                                &[*vk::SubmitInfo::builder()
-                                    .wait_semaphores(&[vulkan.present_semaphore])
-                                    .wait_dst_stage_mask(&[vk::PipelineStageFlags::TRANSFER])
-                                    .command_buffers(&[vulkan.command_buffer])
-                                    .signal_semaphores(&[vulkan.render_semaphore])],
-                                vulkan.render_fence,
-                            )?;
-
-                            swapchain_loader.queue_present(
-                                vulkan.queue,
-                                &vk::PresentInfoKHR::builder()
-                                    .wait_semaphores(&[vulkan.render_semaphore])
-                                    .swapchains(&[swapchain.swapchain])
-                                    .image_indices(&[swapchain_image_index]),
-                            )?;
-                        },
-                        _ => {}
-                    },
-                    _ => {}
-                }
-
-                Ok(())
-            };
-
-            if let Err(loop_closure) = loop_closure() {
-                log::error!("Error: {}", loop_closure);
-            }
-
-            window.request_redraw();
-        });
-    }
-
-    Ok(())
 }
 
 unsafe fn blit_image(vulkan: &Vulkan, src: vk::Image, dst: vk::Image, extent: vk::Extent2D) {
