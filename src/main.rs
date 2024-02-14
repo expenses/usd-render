@@ -1,3 +1,4 @@
+use ash::vk::{self, Handle as _};
 use bbl_usd::{cpp, sdf, tf, usd, vt};
 use clap::Parser;
 use dolly::prelude::*;
@@ -359,7 +360,83 @@ use winit::{
     window::WindowBuilder,
 };
 
-use ash::vk;
+struct Vulkan {
+    device: ash::Device,
+    instance: ash::Instance,
+    entry: ash::Entry,
+    queue: vk::Queue,
+    command_buffer: vk::CommandBuffer,
+    physical_device: vk::PhysicalDevice,
+    render_fence: vk::Fence,
+    render_semaphore: vk::Semaphore,
+    present_semaphore: vk::Semaphore,
+    command_pool: vk::CommandPool,
+}
+
+unsafe fn setup_vulkan(hgi: &usd::HgiVulkan) -> anyhow::Result<Vulkan> {
+    let entry = ash::Entry::load().unwrap();
+    let graphics_queue_family = 0;
+
+    let instance = hgi.get_vulkan_instance();
+
+    let primary_device = hgi.get_primary_device();
+    let physical_device =
+        ash::vk::PhysicalDevice::from_raw(primary_device.get_vulkan_physical_device());
+
+    let instance = ash::Instance::load(
+        &entry.static_fn(),
+        ash::vk::Instance::from_raw(instance.get_vulkan_instance()),
+    );
+
+    let device = ash::Device::load(
+        instance.fp_v1_0(),
+        vk::Device::from_raw(primary_device.get_vulkan_device()),
+    );
+
+    let present_semaphore =
+        unsafe { device.create_semaphore(&vk::SemaphoreCreateInfo::builder(), None) }?;
+    let render_semaphore =
+        unsafe { device.create_semaphore(&vk::SemaphoreCreateInfo::builder(), None) }?;
+    let render_fence = unsafe {
+        device.create_fence(
+            &vk::FenceCreateInfo::builder().flags(vk::FenceCreateFlags::SIGNALED),
+            None,
+        )?
+    };
+
+    let queue = unsafe { device.get_device_queue(graphics_queue_family, 0) };
+
+    let command_pool = unsafe {
+        device.create_command_pool(
+            &vk::CommandPoolCreateInfo::builder().queue_family_index(graphics_queue_family),
+            None,
+        )
+    }?;
+
+    let command_buffers = unsafe {
+        device.allocate_command_buffers(
+            &vk::CommandBufferAllocateInfo::builder()
+                .command_pool(command_pool)
+                .level(vk::CommandBufferLevel::PRIMARY)
+                .command_buffer_count(1),
+        )
+    }?;
+
+    let command_buffer = command_buffers[0];
+
+    Ok(Vulkan {
+        device,
+        instance,
+        entry,
+        queue,
+        command_buffer,
+        physical_device,
+        render_fence,
+        render_semaphore,
+        present_semaphore,
+        command_pool,
+    })
+}
 
 fn main() -> anyhow::Result<()> {
     let event_loop = EventLoop::new().unwrap();
@@ -368,52 +445,34 @@ fn main() -> anyhow::Result<()> {
         .build(&event_loop)
         .unwrap();
 
-    use ash::vk::Handle;
+    let mut args = Args::parse();
+
+    let hgi_vulkan = usd::HgiVulkan::new();
 
     unsafe {
-        let mut args = Args::parse();
-
-        let hgi_vulkan = usd::HgiVulkan::new();
-
-        let entry = ash::Entry::load().unwrap();
-
-        let instance = hgi_vulkan.get_vulkan_instance();
-
-        let primary_device = hgi_vulkan.get_primary_device();
-        let pdevice =
-            ash::vk::PhysicalDevice::from_raw(primary_device.get_vulkan_physical_device());
-
-        let raw_instance = instance.get_vulkan_instance();
-        let instance = ash::Instance::load(
-            &entry.static_fn(),
-            ash::vk::Instance::from_raw(raw_instance),
-        );
-
-        let device = ash::Device::load(
-            instance.fp_v1_0(),
-            vk::Device::from_raw(primary_device.get_vulkan_device()),
-        );
+        let vulkan = setup_vulkan(&hgi_vulkan)?;
 
         let surface = ash_window::create_surface(
-            &entry,
-            &instance,
+            &vulkan.entry,
+            &vulkan.instance,
             window.raw_display_handle(),
             window.raw_window_handle(),
             None,
         )
         .unwrap();
 
-        let surface_loader = ash::extensions::khr::Surface::new(&entry, &instance);
+        let surface_loader = ash::extensions::khr::Surface::new(&vulkan.entry, &vulkan.instance);
 
         let surface_format = surface_loader
-            .get_physical_device_surface_formats(pdevice, surface)
+            .get_physical_device_surface_formats(vulkan.physical_device, surface)
             .unwrap()[0];
 
         let surface_capabilities = surface_loader
-            .get_physical_device_surface_capabilities(pdevice, surface)
+            .get_physical_device_surface_capabilities(vulkan.physical_device, surface)
             .unwrap();
 
-        let swapchain_loader = ash::extensions::khr::Swapchain::new(&instance, &device);
+        let swapchain_loader =
+            ash::extensions::khr::Swapchain::new(&vulkan.instance, &vulkan.device);
 
         let mut swapchain_create_info = vk::SwapchainCreateInfoKHR::builder()
             .surface(surface)
@@ -432,12 +491,12 @@ fn main() -> anyhow::Result<()> {
             .clipped(true)
             .image_array_layers(1);
 
-        let mut swapchain = swapchain_loader.create_swapchain(&swapchain_create_info, None)?;
+        let mut swapchain = Swapchain::new(&swapchain_create_info, &swapchain_loader)?;
 
         let engine = usd::GLEngine::new(&hgi_vulkan);
         engine.set_enable_presentation(false);
         //engine.set_renderer_aov(&tf::Token::new("color"));
-        
+
         let mut camera: CameraRig = CameraRig::builder()
             .with(Position::new(glam::Vec3::splat(2.0)))
             .with(YawPitch {
@@ -458,41 +517,13 @@ fn main() -> anyhow::Result<()> {
         let prim = stage.pseudo_root();
         let params = usd::GLRenderParams::new();
         params.set_cull_style(bbl_usd::ffi::usdImaging_GLCullStyle_usdImaging_GLCullStyle_CULL_STYLE_BACK_UNLESS_DOUBLE_SIDED);
-        //params.set_color_correction_mode(&tf::Token::new("sRGB"));
-        //params.set_enable_lighting(false);
+        params.set_enable_lighting(false);
 
         let proj = glam::DMat4::perspective_rh_gl(59.0_f64.to_radians(), 1.0, 0.01, 1000.0);
         engine.set_renderer_aov(&tf::Token::new("color"));
 
         let transform = camera.update(1.0 / 60.0);
 
-        let graphics_queue_family = 0;
-
-        let present_semaphore = unsafe { device.create_semaphore(&vk::SemaphoreCreateInfo::builder(), None) }?;
-        let render_semaphore = unsafe { device.create_semaphore(&vk::SemaphoreCreateInfo::builder(), None) }?;
-        let render_fence = unsafe { device.create_fence(&vk::FenceCreateInfo::builder().flags(vk::FenceCreateFlags::SIGNALED), None)? };
-
-        let queue = unsafe { device.get_device_queue(graphics_queue_family, 0) };
-
-        let command_pool = unsafe {
-            device.create_command_pool(
-                &vk::CommandPoolCreateInfo::builder().queue_family_index(graphics_queue_family),
-                None,
-            )
-        }?;
-
-        let command_buffers = unsafe {
-            device.allocate_command_buffers(
-                &vk::CommandBufferAllocateInfo::builder()
-                    .command_pool(command_pool)
-                    .level(vk::CommandBufferLevel::PRIMARY)
-                    .command_buffer_count(1),
-            )
-        }?;
-
-        let mut swapchain_images = swapchain_loader.get_swapchain_images(swapchain)?;
-
-        let command_buffer = command_buffers[0];
         let _ = event_loop.run(move |event, elwt| {
             let loop_closure = || -> anyhow::Result<()> {
                 match event {
@@ -506,24 +537,32 @@ fn main() -> anyhow::Result<()> {
                                 width: new_size.width as _,
                                 height: new_size.height as _,
                             };
-                            swapchain =
-                                swapchain_loader.create_swapchain(&swapchain_create_info, None)?;
-                            swapchain_images = swapchain_loader.get_swapchain_images(swapchain)?;
+                            swapchain = Swapchain::new(&swapchain_create_info, &swapchain_loader)?;
+                            engine.set_render_viewport(glam::DVec4::new(
+                                0.0,
+                                0.0,
+                                new_size.width as _,
+                                new_size.height as _,
+                            ));
                         }
                         WindowEvent::RedrawRequested => unsafe {
-                            device.wait_for_fences(&[render_fence], true, u64::MAX)?;
+                            vulkan.device.wait_for_fences(
+                                &[vulkan.render_fence],
+                                true,
+                                u64::MAX,
+                            )?;
 
-                            device.reset_fences(&[render_fence])?;
+                            vulkan.device.reset_fences(&[vulkan.render_fence])?;
 
-                            device.reset_command_pool(
-                                command_pool,
+                            vulkan.device.reset_command_pool(
+                                vulkan.command_pool,
                                 vk::CommandPoolResetFlags::empty(),
                             )?;
 
                             let swapchain_image_index = match swapchain_loader.acquire_next_image(
-                                swapchain,
+                                swapchain.swapchain,
                                 u64::MAX,
-                                present_semaphore,
+                                vulkan.present_semaphore,
                                 vk::Fence::null(),
                             ) {
                                 Ok((swapchain_image_index, _suboptimal)) => swapchain_image_index,
@@ -533,15 +572,7 @@ fn main() -> anyhow::Result<()> {
                                 }
                             };
 
-                            let swapchain_image = swapchain_images[swapchain_image_index as usize];
-
-                            let size = window.inner_size();
-                            engine.set_render_viewport(glam::DVec4::new(
-                                0.0,
-                                0.0,
-                                size.width as _,
-                                size.height as _,
-                            ));
+                            let swapchain_image = swapchain.images[swapchain_image_index as usize];
 
                             engine.set_camera_state(
                                 util::view_from_camera_transform(transform),
@@ -551,81 +582,39 @@ fn main() -> anyhow::Result<()> {
 
                             let texture = engine.get_aov_texture(&tf::Token::new("color"));
                             assert_ne!(texture.ptr, std::ptr::null_mut());
+                            let mut vulkan_texture = texture.get_vulkan_texture();
+                            let color_image = vk::Image::from_raw(vulkan_texture.get_image());
 
-                            let mut vulkan_texture = std::ptr::null_mut();
-                            bbl_usd::ffi::usdImaging_get_vulkan_texture(
-                                texture.ptr,
-                                &mut vulkan_texture,
-                            );
-                            assert_ne!(vulkan_texture, std::ptr::null_mut());
-
-                            let mut vulkan_texture_raw = 0;
-                            bbl_usd::ffi::usdImaging_HgiVulkanTexture_GetImage(
-                                vulkan_texture,
-                                &mut vulkan_texture_raw,
-                            );
-                            let vulkan_texture = vk::Image::from_raw(vulkan_texture_raw);
-
-                            device.begin_command_buffer(
-                                command_buffer,
+                            vulkan.device.begin_command_buffer(
+                                vulkan.command_buffer,
                                 &vk::CommandBufferBeginInfo::builder()
                                     .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
                             )?;
 
-                            let dim = vk::Offset3D {
-                                x: swapchain_create_info.image_extent.width as _,
-                                y: swapchain_create_info.image_extent.height as _,
-                                z: 1
-                            };
-
-                            device.cmd_blit_image(
-                                command_buffer,
-                                vulkan_texture,
-                                vk::ImageLayout::GENERAL,
+                            blit_image(
+                                &vulkan,
+                                color_image,
                                 swapchain_image,
-                                vk::ImageLayout::GENERAL,
-                                &[ash::vk::ImageBlit {
-                                    src_subresource: ash::vk::ImageSubresourceLayers {
-                                        mip_level: 0,
-                                        base_array_layer: 0,
-                                        layer_count: 1,
-                                        aspect_mask: ash::vk::ImageAspectFlags::COLOR,
-                                    },
-                                    dst_subresource: ash::vk::ImageSubresourceLayers {
-                                        mip_level: 0,
-                                        base_array_layer: 0,
-                                        layer_count: 1,
-                                        aspect_mask: ash::vk::ImageAspectFlags::COLOR,
-                                    },
-                                    src_offsets: [
-                                        Default::default(),
-                                        dim,
-                                    ],
-                                    dst_offsets: [
-                                        Default::default(),
-                                        dim,
-                                    ],
-                                }],
-                                ash::vk::Filter::NEAREST,
+                                swapchain_create_info.image_extent,
                             );
 
-                            device.end_command_buffer(command_buffer)?;
+                            vulkan.device.end_command_buffer(vulkan.command_buffer)?;
 
-                            device.queue_submit(
-                                queue,
+                            vulkan.device.queue_submit(
+                                vulkan.queue,
                                 &[*vk::SubmitInfo::builder()
-                                    .wait_semaphores(&[present_semaphore])
+                                    .wait_semaphores(&[vulkan.present_semaphore])
                                     .wait_dst_stage_mask(&[vk::PipelineStageFlags::TRANSFER])
-                                    .command_buffers(&[command_buffer])
-                                    .signal_semaphores(&[render_semaphore])],
-                                render_fence,
+                                    .command_buffers(&[vulkan.command_buffer])
+                                    .signal_semaphores(&[vulkan.render_semaphore])],
+                                vulkan.render_fence,
                             )?;
 
                             swapchain_loader.queue_present(
-                                queue,
+                                vulkan.queue,
                                 &vk::PresentInfoKHR::builder()
-                                    .wait_semaphores(&[render_semaphore])
-                                    .swapchains(&[swapchain])
+                                    .wait_semaphores(&[vulkan.render_semaphore])
+                                    .swapchains(&[swapchain.swapchain])
                                     .image_indices(&[swapchain_image_index]),
                             )?;
                         },
@@ -646,4 +635,63 @@ fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+unsafe fn blit_image(vulkan: &Vulkan, src: vk::Image, dst: vk::Image, extent: vk::Extent2D) {
+    vulkan.device.cmd_blit_image(
+        vulkan.command_buffer,
+        src,
+        vk::ImageLayout::GENERAL,
+        dst,
+        vk::ImageLayout::GENERAL,
+        &[ash::vk::ImageBlit {
+            src_subresource: ash::vk::ImageSubresourceLayers {
+                mip_level: 0,
+                base_array_layer: 0,
+                layer_count: 1,
+                aspect_mask: ash::vk::ImageAspectFlags::COLOR,
+            },
+            dst_subresource: ash::vk::ImageSubresourceLayers {
+                mip_level: 0,
+                base_array_layer: 0,
+                layer_count: 1,
+                aspect_mask: ash::vk::ImageAspectFlags::COLOR,
+            },
+            src_offsets: [
+                Default::default(),
+                vk::Offset3D {
+                    x: extent.width as _,
+                    y: extent.height as _,
+                    z: 1,
+                },
+            ],
+            dst_offsets: [
+                Default::default(),
+                vk::Offset3D {
+                    x: extent.width as _,
+                    y: extent.height as _,
+                    z: 1,
+                },
+            ],
+        }],
+        ash::vk::Filter::NEAREST,
+    );
+}
+
+struct Swapchain {
+    swapchain: vk::SwapchainKHR,
+    images: Vec<vk::Image>,
+}
+
+impl Swapchain {
+    unsafe fn new(
+        create_info: &vk::SwapchainCreateInfoKHR,
+        loader: &ash::extensions::khr::Swapchain,
+    ) -> anyhow::Result<Self> {
+        let swapchain = loader.create_swapchain(create_info, None)?;
+        Ok(Self {
+            images: loader.get_swapchain_images(swapchain)?,
+            swapchain,
+        })
+    }
 }
