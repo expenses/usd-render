@@ -1176,8 +1176,7 @@ dependencies = [
 [[package]]
 name = "egui-winit-ash-integration"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8f71eea5be94fb465fbead19b8fc29316830b8e721b1776b82ed9f621cfa0589"
+source = "git+https://github.com/Crax97/egui-winit-ash-integration?branch=reuse_descriptor_sets#e160cd50c5fe5f350f2f05811afda80c0290325b"
 dependencies = [
  "anyhow",
  "ash",
@@ -1185,6 +1184,7 @@ dependencies = [
  "egui",
  "egui-winit",
  "gpu-allocator",
+ "log",
  "raw-window-handle",
 ]
 

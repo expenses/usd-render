@@ -36,5 +36,5 @@ raw-window-handle = "0.5"
 # Vulkan
 ash = { version = "0.37.3", features = ["linked"] }
 ash-window = "0.12.0"
-egui-winit-ash-integration = "0.6.0"
+egui-winit-ash-integration = { git = "https://github.com/Crax97/egui-winit-ash-integration", branch = "reuse_descriptor_sets"}
 gpu-allocator = "0.23.0"

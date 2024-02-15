@@ -27,8 +27,8 @@
         pkgs = nixpkgs.legacyPackages.${system};
         args = {
           babble = babble.packages.${system}.default;
-          vulkan-sdk = openusd-minimal.packages.${system}.vulkan-sdk-p;
-          openusd-minimal = openusd-minimal.packages.${system}.default;
+          vulkan-sdk = openusd-minimal.packages.${system}.vulkan-sdk;
+          openusd-minimal = openusd-minimal.packages.${system}.default.override { monolithic = true; vulkanSupport = true;};
           craneLib = crane.lib.${system};
         };
         nix-bundle-exe = pkgs.fetchgit {
@@ -36,34 +36,24 @@
           rev = "3522ae68aa4188f4366ed96b41a5881d6a88af97";
           hash = "sha256-K9PT8LVvTLOm3gX9ZFxag0X85DFgB2vvJB+S12disWw=";
         };
-        vma = pkgs.stdenv.mkDerivation {
-          name = "vma";
-
-          src = fetchGit {
-            url = "https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator";
-            rev = "38627f4e37d7a9b13214fd267ec60e0e877e3997";
-          };
-
-          installPhase = ''
-            mkdir -p $out/vma
-            mv include $out/vma
-          '';
-        };
       in {
         packages = rec {
         default = pkgs.callPackage ./package.nix args;
         bundle = pkgs.callPackage "${nix-bundle-exe}/default.nix" {} default;
         };
         
-        devShells.default = with pkgs; mkShell rec {
+        devShells.default = with pkgs; mkShell {
           LIBCLANG_PATH = "${clang.cc.lib}/lib";
-          VULKAN_SDK = "${args.vulkan-sdk}/x86_64";
+          VULKAN_SDK = "${args.vulkan-sdk}";
 
           packages = [
-            args.babble args.openusd-minimal rustup pkg-config cmake ninja gcc clang gtk3
-            vulkan-loader vulkan-headers sway renderdoc vma wayland libxkbcommon xorg.libX11 libglvnd gdb
+            args.babble args.openusd-minimal rustup pkg-config cmake ninja gcc clang
+            vulkan-loader
+            xorg.libXcursor
+            xorg.libXrandr
+            xorg.libXi
+            tbb boost
           ];
-          LD_LIBRARY_PATH = "${lib.makeLibraryPath packages}";
         };
         });
 }

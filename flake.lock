@@ -134,11 +134,11 @@
     },
     "nixpkgs": {
       "locked": {
-        "lastModified": 1707743206,
-        "narHash": "sha256-AehgH64b28yKobC/DAWYZWkJBxL/vP83vkY+ag2Hhy4=",
+        "lastModified": 1707877513,
+        "narHash": "sha256-sp0w2apswd3wv0sAEF7StOGHkns3XUQaO5erhWFZWXk=",
         "owner": "NixOS",
         "repo": "nixpkgs",
-        "rev": "2d627a2a704708673e56346fcb13d25344b8eaf3",
+        "rev": "89653a03e0915e4a872788d10680e7eec92f8600",
         "type": "github"
       },
       "original": {
@@ -225,10 +225,10 @@
         "nixpkgs": "nixpkgs_2"
       },
       "locked": {
-        "dirtyRev": "1e22148bf757cdebc35104d256b86de14cce0319-dirty",
-        "dirtyShortRev": "1e22148-dirty",
-        "lastModified": 1707554027,
-        "narHash": "sha256-mv9ryiLq/9bI9ILFvrOURAaL3+TZVMSeHY9oP5i6qC8=",
+        "dirtyRev": "2b636f2666cd03560f15e78dbd49ae3b4b350d8b-dirty",
+        "dirtyShortRev": "2b636f2-dirty",
+        "lastModified": 1707963575,
+        "narHash": "sha256-J1CgI8C/8BvvqZS3rGzu+jEi3LfQyrrZrq5/n8aEsoo=",
         "type": "git",
         "url": "file:///home/ashley/projects/openusd-minimal-nix"
       },
