@@ -8,11 +8,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1707199433,
-        "narHash": "sha256-nomJfWVILgughTn5k940mPgrG+a0NcHDQwCuPGlL09E=",
+        "lastModified": 1708133682,
+        "narHash": "sha256-UJrO1n9OF5lwJ7MybtzMxFLWg4okxfqTvCH0yEhGPT4=",
         "owner": "expenses",
         "repo": "babble-nix",
-        "rev": "524f50a93ac7d6f6cf8938ac9d03a158334b0f17",
+        "rev": "c015fe74b420aa2701773439e67a3bf955d98782",
         "type": "github"
       },
       "original": {
@@ -134,11 +134,11 @@
     },
     "nixpkgs": {
       "locked": {
-        "lastModified": 1707877513,
-        "narHash": "sha256-sp0w2apswd3wv0sAEF7StOGHkns3XUQaO5erhWFZWXk=",
+        "lastModified": 1708093448,
+        "narHash": "sha256-gohEm3/NVyu7WINFhRf83yJH8UM2ie/KY9Iw3VN6fiE=",
         "owner": "NixOS",
         "repo": "nixpkgs",
-        "rev": "89653a03e0915e4a872788d10680e7eec92f8600",
+        "rev": "c7763249f02b7786b4ca36e13a4d7365cfba162f",
         "type": "github"
       },
       "original": {
@@ -202,39 +202,27 @@
         "type": "github"
       }
     },
-    "nixpkgs_2": {
-      "locked": {
-        "lastModified": 1707546158,
-        "narHash": "sha256-nYYJTpzfPMDxI8mzhQsYjIUX+grorqjKEU9Np6Xwy/0=",
-        "owner": "NixOS",
-        "repo": "nixpkgs",
-        "rev": "d934204a0f8d9198e1e4515dd6fec76a139c87f0",
-        "type": "github"
-      },
-      "original": {
-        "owner": "NixOS",
-        "ref": "nixos-unstable",
-        "repo": "nixpkgs",
-        "type": "github"
-      }
-    },
     "openusd-minimal": {
       "inputs": {
         "flake-parts": "flake-parts_2",
         "materialx": "materialx",
-        "nixpkgs": "nixpkgs_2"
+        "nixpkgs": [
+          "nixpkgs"
+        ]
       },
       "locked": {
-        "dirtyRev": "2b636f2666cd03560f15e78dbd49ae3b4b350d8b-dirty",
-        "dirtyShortRev": "2b636f2-dirty",
         "lastModified": 1707963575,
-        "narHash": "sha256-J1CgI8C/8BvvqZS3rGzu+jEi3LfQyrrZrq5/n8aEsoo=",
-        "type": "git",
-        "url": "file:///home/ashley/projects/openusd-minimal-nix"
+        "narHash": "sha256-cebCMTp1p7Yv95oDIk0LcRVNOuigh9JePpRY/vfb/KE=",
+        "owner": "expenses",
+        "repo": "openusd-minimal-nix",
+        "rev": "2b636f2666cd03560f15e78dbd49ae3b4b350d8b",
+        "type": "github"
       },
       "original": {
-        "type": "git",
-        "url": "file:///home/ashley/projects/openusd-minimal-nix"
+        "owner": "expenses",
+        "ref": "vulkan-support",
+        "repo": "openusd-minimal-nix",
+        "type": "github"
       }
     },
     "root": {

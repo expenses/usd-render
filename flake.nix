@@ -16,8 +16,8 @@
     };
 
     openusd-minimal = {
-      url = "/home/ashley/projects/openusd-minimal-nix";
-      #inputs.nixpkgs.follows = "nixpkgs";
+      url = "github:expenses/openusd-minimal-nix/vulkan-support";
+      inputs.nixpkgs.follows = "nixpkgs";
     };
   };
 
@@ -28,7 +28,7 @@
         args = {
           babble = babble.packages.${system}.default;
           vulkan-sdk = openusd-minimal.packages.${system}.vulkan-sdk;
-          openusd-minimal = openusd-minimal.packages.${system}.default.override { monolithic = true; vulkanSupport = true;};
+          openusd-minimal = openusd-minimal.packages.${system}.default.override { vulkanSupport = true;};
           craneLib = crane.lib.${system};
         };
         nix-bundle-exe = pkgs.fetchgit {
