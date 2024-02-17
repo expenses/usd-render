@@ -212,7 +212,7 @@ async fn main() -> anyhow::Result<()> {
 
     let params = usd::GLRenderParams::new();
     params.set_cull_style(bbl_usd::ffi::usdImaging_GLCullStyle_usdImaging_GLCullStyle_CULL_STYLE_BACK_UNLESS_DOUBLE_SIDED);
-    params.set_enable_lighting(false);
+    //params.set_enable_lighting(false);
 
     engine.set_render_viewport(glam::DVec4::new(
         0.0,

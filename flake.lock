@@ -41,6 +41,27 @@
         "type": "github"
       }
     },
+    "fenix": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ],
+        "rust-analyzer-src": "rust-analyzer-src"
+      },
+      "locked": {
+        "lastModified": 1708064520,
+        "narHash": "sha256-m0teYrbf7kAainkHBJ+zpClBNaTIOX6QNkn5W8on4uY=",
+        "owner": "nix-community",
+        "repo": "fenix",
+        "rev": "2f24d67fad634ecf1820a73bb40d709eb12862bf",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nix-community",
+        "repo": "fenix",
+        "type": "github"
+      }
+    },
     "flake-parts": {
       "inputs": {
         "nixpkgs-lib": "nixpkgs-lib"
@@ -134,18 +155,18 @@
     },
     "nixpkgs": {
       "locked": {
-        "lastModified": 1707877513,
-        "narHash": "sha256-sp0w2apswd3wv0sAEF7StOGHkns3XUQaO5erhWFZWXk=",
-        "owner": "NixOS",
-        "repo": "nixpkgs",
-        "rev": "89653a03e0915e4a872788d10680e7eec92f8600",
-        "type": "github"
+        "dirtyRev": "f6725ead0db096814b6e5ee76838db9291972858-dirty",
+        "dirtyShortRev": "f6725ead0db0-dirty",
+        "lastModified": 1708003310,
+        "narHash": "sha256-Gr3i6z9b1n/+mBqbHggcdV7G9AiDtAvwO5XquGwIbn4=",
+        "shallow": true,
+        "type": "git",
+        "url": "file:///home/ashley/projects/nixpkgs"
       },
       "original": {
-        "owner": "NixOS",
-        "ref": "nixpkgs-unstable",
-        "repo": "nixpkgs",
-        "type": "github"
+        "shallow": true,
+        "type": "git",
+        "url": "file:///home/ashley/projects/nixpkgs"
       }
     },
     "nixpkgs-lib": {
@@ -204,18 +225,18 @@
     },
     "nixpkgs_2": {
       "locked": {
-        "lastModified": 1707546158,
-        "narHash": "sha256-nYYJTpzfPMDxI8mzhQsYjIUX+grorqjKEU9Np6Xwy/0=",
-        "owner": "NixOS",
-        "repo": "nixpkgs",
-        "rev": "d934204a0f8d9198e1e4515dd6fec76a139c87f0",
-        "type": "github"
+        "dirtyRev": "4c5f133d3e1f5369da9836649cf469c849558466-dirty",
+        "dirtyShortRev": "4c5f133d3e1f-dirty",
+        "lastModified": 1707992244,
+        "narHash": "sha256-S97PEhqQerkbKzOCV/Ew2vZ3k8nckvaksXCZ6fA3h8M=",
+        "shallow": true,
+        "type": "git",
+        "url": "file:///home/ashley/projects/nixpkgs"
       },
       "original": {
-        "owner": "NixOS",
-        "ref": "nixos-unstable",
-        "repo": "nixpkgs",
-        "type": "github"
+        "shallow": true,
+        "type": "git",
+        "url": "file:///home/ashley/projects/nixpkgs"
       }
     },
     "openusd-minimal": {
@@ -225,10 +246,11 @@
         "nixpkgs": "nixpkgs_2"
       },
       "locked": {
-        "dirtyRev": "2b636f2666cd03560f15e78dbd49ae3b4b350d8b-dirty",
-        "dirtyShortRev": "2b636f2-dirty",
-        "lastModified": 1707963575,
-        "narHash": "sha256-J1CgI8C/8BvvqZS3rGzu+jEi3LfQyrrZrq5/n8aEsoo=",
+        "lastModified": 1708062713,
+        "narHash": "sha256-R+UgGUPiowEZ6gtkBr3d6m3ATxQbEZjIS92/wrwz4oM=",
+        "ref": "refs/heads/windows-mvp",
+        "rev": "7302b09f06598559905636987184c226c1e6ee3f",
+        "revCount": 27,
         "type": "git",
         "url": "file:///home/ashley/projects/openusd-minimal-nix"
       },
@@ -241,9 +263,27 @@
       "inputs": {
         "babble": "babble",
         "crane": "crane",
+        "fenix": "fenix",
         "flake-utils": "flake-utils",
         "nixpkgs": "nixpkgs",
         "openusd-minimal": "openusd-minimal"
+      }
+    },
+    "rust-analyzer-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1708018577,
+        "narHash": "sha256-B75VUqKvQeIqAUnYw4bGjY3xxrCqzRBJHLbmD0MAWEw=",
+        "owner": "rust-lang",
+        "repo": "rust-analyzer",
+        "rev": "b9b0d29b8e69b02457cfabe20c4c69cdb45f3cc5",
+        "type": "github"
+      },
+      "original": {
+        "owner": "rust-lang",
+        "ref": "nightly",
+        "repo": "rust-analyzer",
+        "type": "github"
       }
     },
     "systems": {

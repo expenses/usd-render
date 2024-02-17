@@ -2,7 +2,7 @@
   description = "Build a cargo project without extra checks";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+    nixpkgs.url = "/home/ashley/projects/nixpkgs";
     flake-utils.url = "github:numtide/flake-utils";
 
     crane = {
@@ -19,17 +19,28 @@
       url = "/home/ashley/projects/openusd-minimal-nix";
       #inputs.nixpkgs.follows = "nixpkgs";
     };
+    fenix = {
+      url = "github:nix-community/fenix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
-  outputs = { self, nixpkgs, crane, flake-utils, babble, openusd-minimal, ... }:
+  outputs = { self, nixpkgs, crane, flake-utils, babble, openusd-minimal, fenix, ... }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
+        toolchain = with fenix.packages.${system};
+    combine [
+      minimal.rustc
+      minimal.cargo
+      targets.x86_64-pc-windows-gnu.latest.rust-std
+    ];
+
         args = {
           babble = babble.packages.${system}.default;
           vulkan-sdk = openusd-minimal.packages.${system}.vulkan-sdk;
           openusd-minimal = openusd-minimal.packages.${system}.default.override { monolithic = true; vulkanSupport = true;};
-          craneLib = crane.lib.${system};
+        craneLib = (crane.mkLib pkgs).overrideToolchain toolchain;       
         };
         nix-bundle-exe = pkgs.fetchgit {
           url = "https://github.com/3noch/nix-bundle-exe";
@@ -39,6 +50,11 @@
       in {
         packages = rec {
         default = pkgs.callPackage ./package.nix args;
+
+        windows = pkgs.pkgsCross.mingwW64.callPackage ./package.nix (args // {
+          vulkan-sdk = pkgs.pkgsCross.mingwW64.callPackage ./vulkan-sdk.nix {};
+          openusd-minimal = openusd-minimal.packages.${system}.windows.override { vulkanSupport = true;};
+        });
         bundle = pkgs.callPackage "${nix-bundle-exe}/default.nix" {} default;
         };
         
