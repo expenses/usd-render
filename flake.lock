@@ -35,16 +35,17 @@
         ]
       },
       "locked": {
-        "dirtyRev": "671ec3d7dbdc10e14dd41e2aa46696176fb1a1b7-dirty",
-        "dirtyShortRev": "671ec3d-dirty",
-        "lastModified": 1708311993,
-        "narHash": "sha256-jlsr6/7904SaiHEHDWgfbMvxJzWNC1zL4PPVFZ6mL9g=",
-        "type": "git",
-        "url": "file:///home/ashley/projects/bbl-usd-nix"
+        "lastModified": 1708510932,
+        "narHash": "sha256-0yCwC2SzkHt3ohhbuReXTJFlhV+Rjd4M0ocPrS4qXWE=",
+        "owner": "expenses",
+        "repo": "bbl-usd-nix",
+        "rev": "0e871ad476c6b86dadc60ac4c9cac242080ec4f3",
+        "type": "github"
       },
       "original": {
-        "type": "git",
-        "url": "file:///home/ashley/projects/bbl-usd-nix"
+        "owner": "expenses",
+        "repo": "bbl-usd-nix",
+        "type": "github"
       }
     },
     "crane": {

@@ -22,7 +22,7 @@
     };
 
     bbl-usd = {
-      url = "/home/ashley/projects/bbl-usd-nix";
+      url = "github:expenses/bbl-usd-nix";
       inputs = {
         nixpkgs.follows = "nixpkgs";
         openusd-minimal.follows = "openusd-minimal";
