@@ -351,20 +351,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8c3c1a368f70d6cf7302d78f8f7093da241fb8e8807c05cc9e51a125895a6d5b"
 
 [[package]]
-name = "bbl-build"
-version = "0.2.0"
-source = "git+https://github.com/expenses/bbl-build-rs?branch=ninja-linking#de3413699eca30e22855f7f72057dc556464aae9"
-dependencies = [
- "regex",
-]
-
-[[package]]
 name = "bbl-usd"
 version = "0.1.0"
-source = "git+https://github.com/expenses/bbl-usd-rs?branch=imaging-plus-resolver#d1eae88630a129bb73a29b1ef18109eaad68fec7"
+source = "git+https://github.com/expenses/bbl-usd-rs?branch=imaging-plus-resolver#3c185ab7e04ed3b8b7863c6f42ae23bb0757cff3"
 dependencies = [
- "bbl-build",
  "bindgen",
+ "cmake",
  "glam",
  "paste",
 ]
@@ -618,6 +610,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ec832972fefb8cf9313b45a0d1945e29c9c251f1d4c6eafc5fe2124c02d2e81"
 dependencies = [
  "error-code",
+]
+
+[[package]]
+name = "cmake"
+version = "0.1.50"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a31c789563b815f77f4250caee12365734369f942439b7defd71e18a48197130"
+dependencies = [
+ "cc",
 ]
 
 [[package]]
@@ -1052,7 +1053,7 @@ version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330c60081dcc4c72131f8eb70510f1ac07223e5d4163db481a04a0befcffa412"
 dependencies = [
- "libloading 0.8.1",
+ "libloading 0.7.4",
 ]
 
 [[package]]

@@ -21,6 +21,32 @@
         "type": "github"
       }
     },
+    "bbl-usd": {
+      "inputs": {
+        "babble": [
+          "babble"
+        ],
+        "flake-parts": "flake-parts_2",
+        "nixpkgs": [
+          "nixpkgs"
+        ],
+        "openusd-minimal": [
+          "openusd-minimal"
+        ]
+      },
+      "locked": {
+        "dirtyRev": "671ec3d7dbdc10e14dd41e2aa46696176fb1a1b7-dirty",
+        "dirtyShortRev": "671ec3d-dirty",
+        "lastModified": 1708311993,
+        "narHash": "sha256-jlsr6/7904SaiHEHDWgfbMvxJzWNC1zL4PPVFZ6mL9g=",
+        "type": "git",
+        "url": "file:///home/ashley/projects/bbl-usd-nix"
+      },
+      "original": {
+        "type": "git",
+        "url": "file:///home/ashley/projects/bbl-usd-nix"
+      }
+    },
     "crane": {
       "inputs": {
         "nixpkgs": [
@@ -38,6 +64,27 @@
       "original": {
         "owner": "ipetkov",
         "repo": "crane",
+        "type": "github"
+      }
+    },
+    "fenix": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ],
+        "rust-analyzer-src": "rust-analyzer-src"
+      },
+      "locked": {
+        "lastModified": 1708410168,
+        "narHash": "sha256-98kCv2PbKfqt+oyyXHqdXPRRGjW+QEy9eBzNtRyCRHs=",
+        "owner": "nix-community",
+        "repo": "fenix",
+        "rev": "846fc5ddb810c36411de6587384bef86c2db5127",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nix-community",
+        "repo": "fenix",
         "type": "github"
       }
     },
@@ -92,6 +139,23 @@
         "type": "indirect"
       }
     },
+    "flake-parts_4": {
+      "inputs": {
+        "nixpkgs-lib": "nixpkgs-lib_4"
+      },
+      "locked": {
+        "lastModified": 1706830856,
+        "narHash": "sha256-a0NYyp+h9hlb7ddVz4LUn1vT/PLwqfrWYcHMvFB1xYg=",
+        "owner": "hercules-ci",
+        "repo": "flake-parts",
+        "rev": "b253292d9c0a5ead9bc98c4e9a26c6312e27d69f",
+        "type": "github"
+      },
+      "original": {
+        "id": "flake-parts",
+        "type": "indirect"
+      }
+    },
     "flake-utils": {
       "inputs": {
         "systems": "systems"
@@ -112,11 +176,8 @@
     },
     "materialx": {
       "inputs": {
-        "flake-parts": "flake-parts_3",
-        "nixpkgs": [
-          "openusd-minimal",
-          "nixpkgs"
-        ]
+        "flake-parts": "flake-parts_4",
+        "nixpkgs": "nixpkgs_2"
       },
       "locked": {
         "lastModified": 1707553506,
@@ -134,16 +195,16 @@
     },
     "nixpkgs": {
       "locked": {
-        "lastModified": 1708093448,
-        "narHash": "sha256-gohEm3/NVyu7WINFhRf83yJH8UM2ie/KY9Iw3VN6fiE=",
-        "owner": "NixOS",
+        "lastModified": 1708490553,
+        "narHash": "sha256-GMuLR5ygQX34zbvxPNMCkyNAhqhJ/dEzjpY4rLYuIUc=",
+        "owner": "expenses",
         "repo": "nixpkgs",
-        "rev": "c7763249f02b7786b4ca36e13a4d7365cfba162f",
+        "rev": "1d801d211ff2cf5ad956e619135e01e4aaedfe0c",
         "type": "github"
       },
       "original": {
-        "owner": "NixOS",
-        "ref": "nixpkgs-unstable",
+        "owner": "expenses",
+        "ref": "my-patches-for-openusd",
         "repo": "nixpkgs",
         "type": "github"
       }
@@ -202,25 +263,73 @@
         "type": "github"
       }
     },
-    "openusd-minimal": {
-      "inputs": {
-        "flake-parts": "flake-parts_2",
-        "materialx": "materialx",
-        "nixpkgs": [
-          "nixpkgs"
-        ]
-      },
+    "nixpkgs-lib_4": {
       "locked": {
-        "lastModified": 1707963575,
-        "narHash": "sha256-cebCMTp1p7Yv95oDIk0LcRVNOuigh9JePpRY/vfb/KE=",
+        "dir": "lib",
+        "lastModified": 1706550542,
+        "narHash": "sha256-UcsnCG6wx++23yeER4Hg18CXWbgNpqNXcHIo5/1Y+hc=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "97b17f32362e475016f942bbdfda4a4a72a8a652",
+        "type": "github"
+      },
+      "original": {
+        "dir": "lib",
+        "owner": "NixOS",
+        "ref": "nixos-unstable",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "nixpkgs_2": {
+      "locked": {
+        "lastModified": 1708296515,
+        "narHash": "sha256-FyF489fYNAUy7b6dkYV6rGPyzp+4tThhr80KNAaF/yY=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "b98a4e1746acceb92c509bc496ef3d0e5ad8d4aa",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "ref": "nixos-unstable",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "nixpkgs_3": {
+      "locked": {
+        "lastModified": 1708490553,
+        "narHash": "sha256-GMuLR5ygQX34zbvxPNMCkyNAhqhJ/dEzjpY4rLYuIUc=",
         "owner": "expenses",
-        "repo": "openusd-minimal-nix",
-        "rev": "2b636f2666cd03560f15e78dbd49ae3b4b350d8b",
+        "repo": "nixpkgs",
+        "rev": "1d801d211ff2cf5ad956e619135e01e4aaedfe0c",
         "type": "github"
       },
       "original": {
         "owner": "expenses",
-        "ref": "vulkan-support",
+        "ref": "my-patches-for-openusd",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "openusd-minimal": {
+      "inputs": {
+        "flake-parts": "flake-parts_3",
+        "materialx": "materialx",
+        "nixpkgs": "nixpkgs_3"
+      },
+      "locked": {
+        "lastModified": 1708490949,
+        "narHash": "sha256-mgdYpBK+FgKo+i+WzzIYocz5xJ/jOBKDb1sVRgJFjKE=",
+        "owner": "expenses",
+        "repo": "openusd-minimal-nix",
+        "rev": "becd4c1450d0c9f33b215cb6ee9f657e38b8ade0",
+        "type": "github"
+      },
+      "original": {
+        "owner": "expenses",
+        "ref": "windows-tbb",
         "repo": "openusd-minimal-nix",
         "type": "github"
       }
@@ -228,10 +337,29 @@
     "root": {
       "inputs": {
         "babble": "babble",
+        "bbl-usd": "bbl-usd",
         "crane": "crane",
+        "fenix": "fenix",
         "flake-utils": "flake-utils",
         "nixpkgs": "nixpkgs",
         "openusd-minimal": "openusd-minimal"
+      }
+    },
+    "rust-analyzer-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1708361159,
+        "narHash": "sha256-HAZ/pEN0TVFoGMbITliYXbMLPaSy/X+WKY/y6K8iTr0=",
+        "owner": "rust-lang",
+        "repo": "rust-analyzer",
+        "rev": "2223b4fa71e543ac6dd1abd4770a69fab8dbdec1",
+        "type": "github"
+      },
+      "original": {
+        "owner": "rust-lang",
+        "ref": "nightly",
+        "repo": "rust-analyzer",
+        "type": "github"
       }
     },
     "systems": {
