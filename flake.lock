@@ -35,11 +35,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1708510932,
-        "narHash": "sha256-0yCwC2SzkHt3ohhbuReXTJFlhV+Rjd4M0ocPrS4qXWE=",
+        "lastModified": 1708511293,
+        "narHash": "sha256-aul/siW1CzJBe4a42wlV9mt6J+CHxMvZgc3ewRld0ZE=",
         "owner": "expenses",
         "repo": "bbl-usd-nix",
-        "rev": "0e871ad476c6b86dadc60ac4c9cac242080ec4f3",
+        "rev": "04663e22e359db44dc3be70e9007d8378fa532fa",
         "type": "github"
       },
       "original": {
